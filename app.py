@@ -143,9 +143,8 @@ def _render_sidebar(account) -> None:
         ready = [
             name
             for name, configured in (
-                ("groq", settings.groq_api_key),
                 ("gemini", settings.gemini_api_key),
-                ("mistral", settings.mistral_api_key),
+                ("groq", settings.groq_api_key),
                 ("ollama", settings.enable_ollama),
             )
             if configured
@@ -206,9 +205,8 @@ def _render_user_sidebar(account) -> None:
         ready = [
             name
             for name, configured in (
-                ("groq", settings.groq_api_key),
                 ("gemini", settings.gemini_api_key),
-                ("mistral", settings.mistral_api_key),
+                ("groq", settings.groq_api_key),
                 ("ollama", settings.enable_ollama),
             )
             if configured
