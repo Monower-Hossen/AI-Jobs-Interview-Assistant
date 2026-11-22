@@ -31,6 +31,7 @@ from services.live_interview_media_service import save_live_media as _save_live_
 from services.live_interview_media_service import set_recording_status as _set_recording_status
 from services.live_interview_media_service import verify_live_media as _verify_live_media
 from services.live_webcam_audio import LiveAudioRecorder
+from services.resource_monitor import ResourceBusyError
 from services.speech_to_text import get_speech_to_text
 
 
@@ -110,6 +111,8 @@ def transcribe_audio_bytes(wav_bytes: bytes, *, transcriber: Any = None) -> str:
     try:
         service = transcriber or get_speech_to_text()
         result = service.transcribe_from_bytes(wav_bytes, format="wav")
+    except ResourceBusyError as exc:
+        raise LiveInterviewError(str(exc)) from exc
     except Exception as exc:
         raise LiveInterviewError(
             "Could not transcribe the captured audio. Check the local Whisper setup and retry."
@@ -185,15 +188,17 @@ def save_live_media(
 ) -> int:
     try:
         return _save_live_media(
-            recording_id=int(recording_id),
-            interview_id=int(interview_id),
-            user_id=int(user_id),
+            recording_id=recording_id,
+            interview_id=interview_id,
+            user_id=user_id,
             session_token=session_token,
             media_type=media_type,
             data=data,
-            duration_seconds=float(duration_seconds),
+            duration_seconds=duration_seconds,
             metadata=metadata,
         )
+    except ResourceBusyError as exc:
+        raise LiveInterviewError(str(exc)) from exc
     except LiveMediaError as exc:
         raise LiveInterviewError(str(exc)) from exc
     except Exception as exc:
