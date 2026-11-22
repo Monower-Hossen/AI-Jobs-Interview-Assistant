@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import threading
+import time
 import wave
 from collections import deque
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ MAX_LIVE_AUDIO_CHUNKS = 32768
 AUDIO_SAMPLE_WIDTH = 2
 NORMALIZED_SAMPLE_RATE = 16000
 NORMALIZED_CHANNELS = 1
+NORMALIZED_SAMPLE_FORMAT = "s16"
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,8 @@ class LiveAudioRecorder:
         self._capture_error: str | None = None
         self._flushed = False
         self._normalizer = AudioNormalizer()
+        self._first_received_monotonic_ns: int | None = None
+        self._last_received_monotonic_ns: int | None = None
 
     @property
     def enabled(self) -> bool:
@@ -145,6 +149,7 @@ class LiveAudioRecorder:
             self._capture_error = str(message) if message else None
 
     def append_frame(self, frame) -> None:
+        received_ns = time.monotonic_ns()
         with self._lock:
             if not self._enabled or self._flushed:
                 return
@@ -154,7 +159,7 @@ class LiveAudioRecorder:
                 self._capture_error = f"Audio conversion failed: {exc}"
                 return
             for chunk in chunks:
-                self._append_chunk_locked(chunk)
+                self._append_chunk_locked(chunk, received_ns=received_ns)
 
     def flush(self) -> None:
         with self._lock:
@@ -171,9 +176,9 @@ class LiveAudioRecorder:
 
     def append_chunk(self, chunk: AudioChunk) -> None:
         with self._lock:
-            self._append_chunk_locked(chunk)
+            self._append_chunk_locked(chunk, received_ns=time.monotonic_ns())
 
-    def _append_chunk_locked(self, chunk: AudioChunk) -> None:
+    def _append_chunk_locked(self, chunk: AudioChunk, *, received_ns: int | None = None) -> None:
         if not isinstance(chunk, AudioChunk):
             raise TypeError("chunk must be an AudioChunk")
         if chunk.sample_rate < 1 or chunk.channels < 1 or chunk.samples < 1:
@@ -221,6 +226,10 @@ class LiveAudioRecorder:
         self._chunks.append(chunk)
         self._total_samples += chunk.samples
         self._total_bytes += len(chunk.pcm)
+        if received_ns is not None:
+            if self._first_received_monotonic_ns is None:
+                self._first_received_monotonic_ns = int(received_ns)
+            self._last_received_monotonic_ns = int(received_ns)
 
     def to_wav_bytes(self) -> bytes:
         self.flush()
@@ -242,9 +251,10 @@ class LiveAudioRecorder:
         with self._lock:
             duration = self._total_samples / self._sample_rate if self._sample_rate else 0.0
             return {
-                "sample_rate": self._sample_rate,
-                "channels": self._channels,
-                "duration_seconds": round(duration, 2),
+                "sample_rate": self._sample_rate or NORMALIZED_SAMPLE_RATE,
+                "channels": self._channels or NORMALIZED_CHANNELS,
+                "sample_format": NORMALIZED_SAMPLE_FORMAT,
+                "duration_seconds": round(duration, 3),
                 "byte_count": self._total_bytes,
                 "chunk_count": len(self._chunks),
                 "dropped_chunks": self._dropped_chunks,
@@ -252,6 +262,8 @@ class LiveAudioRecorder:
                 "enabled": self._enabled,
                 "capture_error": self._capture_error,
                 "flushed": self._flushed,
+                "first_received_monotonic_ns": self._first_received_monotonic_ns,
+                "last_received_monotonic_ns": self._last_received_monotonic_ns,
             }
 
     def clear(self) -> None:
@@ -267,3 +279,5 @@ class LiveAudioRecorder:
             self._capture_error = None
             self._flushed = False
             self._normalizer = AudioNormalizer()
+            self._first_received_monotonic_ns = None
+            self._last_received_monotonic_ns = None

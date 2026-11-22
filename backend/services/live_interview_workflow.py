@@ -17,6 +17,9 @@ from services.job_interview_service import (
 )
 from services.job_post_service import list_jobs
 from services.live_interview_media_service import LiveMediaError
+from services.live_interview_media_service import (
+    cleanup_temporary_media as _cleanup_temporary_media,
+)
 from services.live_interview_media_service import delete_live_media as _delete_live_media
 from services.live_interview_media_service import delete_live_recording as _delete_live_recording
 from services.live_interview_media_service import ensure_live_recording as _ensure_live_recording
@@ -27,6 +30,12 @@ from services.live_interview_media_service import list_admin_recordings as _list
 from services.live_interview_media_service import list_user_recordings as _list_user_recordings
 from services.live_interview_media_service import read_live_media as _read_live_media
 from services.live_interview_media_service import recording_details as _recording_details
+from services.live_interview_media_service import (
+    retry_pending_deletions as _retry_pending_deletions,
+)
+from services.live_interview_media_service import (
+    run_storage_integrity_diagnostics as _run_storage_integrity_diagnostics,
+)
 from services.live_interview_media_service import save_live_media as _save_live_media
 from services.live_interview_media_service import set_recording_status as _set_recording_status
 from services.live_interview_media_service import verify_live_media as _verify_live_media
@@ -231,9 +240,9 @@ def delete_live_media(
     user_id: int | None = None,
     session_token: str | None = None,
     admin_id: int | None = None,
-) -> None:
+) -> dict[str, Any]:
     try:
-        _delete_live_media(
+        return _delete_live_media(
             int(media_id),
             actor_user_id=user_id,
             session_token=session_token,
@@ -251,9 +260,9 @@ def delete_live_recording(
     user_id: int | None = None,
     session_token: str | None = None,
     admin_id: int | None = None,
-) -> None:
+) -> dict[str, Any]:
     try:
-        _delete_live_recording(
+        return _delete_live_recording(
             int(recording_id),
             actor_user_id=user_id,
             session_token=session_token,
@@ -425,6 +434,49 @@ def get_live_report(
         raise LiveInterviewError(str(exc)) from exc
     except Exception as exc:
         raise LiveInterviewError("The final report is unavailable.") from exc
+
+
+def retry_live_media_deletions(
+    *,
+    user_id: int | None = None,
+    session_token: str | None = None,
+    admin_id: int | None = None,
+    recording_id: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return _retry_pending_deletions(
+            actor_user_id=user_id,
+            session_token=session_token,
+            actor_admin_id=admin_id,
+            recording_id=recording_id,
+        )
+    except LiveMediaError as exc:
+        raise LiveInterviewError(str(exc)) from exc
+    except Exception as exc:
+        raise LiveInterviewError("Could not retry pending deletions.") from exc
+
+
+def run_live_storage_integrity_diagnostics(
+    *, admin_id: int | None = None, min_temp_age_seconds: int = 300
+) -> dict[str, Any]:
+    try:
+        return _run_storage_integrity_diagnostics(
+            actor_admin_id=admin_id,
+            min_temp_age_seconds=min_temp_age_seconds,
+        )
+    except LiveMediaError as exc:
+        raise LiveInterviewError(str(exc)) from exc
+    except Exception as exc:
+        raise LiveInterviewError("Could not run storage diagnostics.") from exc
+
+
+def cleanup_live_temporary_media(*, min_age_seconds: int = 300, dry_run: bool = True) -> dict[str, Any]:
+    try:
+        return _cleanup_temporary_media(min_age_seconds=min_age_seconds, dry_run=dry_run)
+    except LiveMediaError as exc:
+        raise LiveInterviewError(str(exc)) from exc
+    except Exception as exc:
+        raise LiveInterviewError("Could not inspect temporary media files.") from exc
 
 
 def abandon_live_interview(
