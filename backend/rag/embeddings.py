@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 from config.settings import settings
 from sentence_transformers import SentenceTransformer
+from services.resource_monitor import acquire_heavy_task
 
 
 class EmbeddingModel:
@@ -23,6 +24,8 @@ class EmbeddingModel:
 
     def _load_model(self):
         device = settings.embedding_device
+        if not bool(getattr(settings, "allow_cuda_inference", False)):
+            device = "cpu"
         model_name = settings.embedding_model
 
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -35,14 +38,17 @@ class EmbeddingModel:
     ) -> np.ndarray:
         if isinstance(texts, str):
             texts = [texts]
+        if not texts:
+            return np.array([])
 
-        embeddings = self._model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=show_progress_bar,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        )
+        with acquire_heavy_task("embedding_generation"):
+            embeddings = self._model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=show_progress_bar,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            )
         return embeddings
 
     def encode_single(self, text: str) -> np.ndarray:
