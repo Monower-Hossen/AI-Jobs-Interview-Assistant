@@ -10,9 +10,11 @@ from backend.services.resource_monitor import (
     ResourceSnapshot,
     acquire_heavy_task,
     check_heavy_task_allowed,
+    end_heavy_task,
     format_resource_status,
     get_resource_snapshot,
     reset_resource_monitor_state,
+    try_begin_heavy_task,
 )
 
 
@@ -133,3 +135,20 @@ def test_format_resource_status_no_sensitive_data():
     assert "RAM" in text
     assert "CPU" in text
     assert "password" not in text.lower()
+
+def test_try_begin_and_end_heavy_task(monkeypatch):
+    import backend.config.settings as settings_mod
+    import backend.services.resource_monitor as rm
+
+    reset_resource_monitor_state()
+    monkeypatch.setattr(settings_mod.settings, "resource_guardrails_enabled", True)
+    monkeypatch.setattr(rm, "get_resource_snapshot", lambda force=False: _snapshot())
+    allowed, reason = try_begin_heavy_task("video_processing")
+    assert allowed and reason is None
+    allowed2, reason2 = check_heavy_task_allowed("embedding_generation")
+    assert not allowed2
+    assert "video" in (reason2 or "").lower()
+    end_heavy_task("video_processing")
+    allowed3, _ = check_heavy_task_allowed("embedding_generation")
+    assert allowed3
+    reset_resource_monitor_state()
