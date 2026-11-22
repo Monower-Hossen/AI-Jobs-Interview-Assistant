@@ -30,20 +30,26 @@ from services.live_interview_state import (
     TTS_COUNTER,
     add_pending_media_id,
     can_submit_answer,
+    clear_capture_buffers,
+    clear_capture_data,
     clear_transcript,
+    ensure_capture_manifest,
     get_recorder,
     get_video_recorder,
     mark_answer_submitted,
     prepare_for_question,
     recording_consent_granted,
     remaining_answer_seconds,
+    report_recorder_failure,
     reset_answer_state,
+    set_capture_manifest,
     set_media_status,
     set_recording_consent,
     set_transcript,
     set_transcript_error,
     start_recording,
     stop_recording,
+    update_capture_manifest_for_recorders,
 )
 from services.live_interview_state import (
     initialize_live_interview_state as initialize_interview_state,
@@ -67,6 +73,23 @@ from services.live_interview_workflow import (
     submit_live_answer,
     transcribe_audio_bytes,
 )
+from services.live_recorder_lifecycle import (
+    AUDIO_ERROR,
+    OPERATION_FINALIZE,
+    OPERATION_PERSIST,
+    OPERATION_TRANSCRIBE,
+    VIDEO_ERROR,
+    claim_answer_operation,
+    claim_finalization,
+    complete_answer_operation,
+    current_answer_id,
+    is_current_answer,
+    mark_recorder_failure,
+    operation_result,
+    set_stream_errors,
+    set_stream_statuses,
+)
+from services.live_recording_manifest import CAPTURE_MANIFEST_KEY
 from services.live_webcam_state import (
     CAMERA,
     CONSENT_CAMERA,
@@ -301,17 +324,30 @@ def _wav_duration_seconds(data: bytes) -> float:
         return 0.0
 
 
+def _recording_status_for_media_state() -> str:
+    status = str(st.session_state.get(MEDIA_STATUS) or "")
+    if status == "saved":
+        return "completed"
+    if status in {"failed", "finalize_failed"}:
+        return "failed"
+    return "interrupted"
+
+
 def _delete_pending_media(user_id: int, session_token: str) -> None:
     pending = list(st.session_state.get(PENDING_MEDIA_IDS) or [])
     errors: list[str] = []
+    remaining: list[int] = []
     for media_id in pending:
         try:
             delete_live_media(int(media_id), user_id=user_id, session_token=session_token)
         except LiveInterviewError as exc:
             errors.append(str(exc))
-    st.session_state[PENDING_MEDIA_IDS] = []
+            remaining.append(media_id)
+    st.session_state[PENDING_MEDIA_IDS] = remaining
     if errors:
         set_media_status(st.session_state, "delete_failed", "; ".join(errors))
+    elif pending:
+        set_media_status(st.session_state, "deleted", None)
 
 
 def _finalize_answer_media(
@@ -320,45 +356,155 @@ def _finalize_answer_media(
     question_number: int,
     user_id: int,
     session_token: str,
+    answer_id: str | None = None,
 ) -> tuple[str | None, str | None]:
-    recorder = get_recorder(st.session_state)
-    video_recorder = get_video_recorder(st.session_state)
-    consent = recording_consent_granted(st.session_state)
-    recording_id = st.session_state.get(RECORDING_ID)
-    audio_snapshot = recorder.snapshot()
-    video_snapshot = video_recorder.snapshot()
-    audio_bytes = b""
-    transcript_error: str | None = None
-    try:
-        audio_bytes = capture_audio_bytes(recorder)
-    except LiveInterviewError as exc:
-        transcript_error = str(exc)
+    state = st.session_state
+    recorder = get_recorder(state)
+    video_recorder = get_video_recorder(state)
+    current_id = current_answer_id(state)
+    stale_question = state.get(RECORDING_QUESTION)
+    if answer_id is not None and not is_current_answer(
+        state, answer_id=answer_id, question_number=question_number
+    ):
+        return None, "This answer is no longer active; its media was not finalized."
+    if (
+        current_id is None
+        and stale_question is not None
+        and int(stale_question) != int(question_number)
+    ):
+        return None, "This answer is no longer active; its media was not finalized."
+    claimed, cached = claim_finalization(
+        state, answer_id=answer_id, question_number=question_number
+    )
+    if not claimed:
+        if cached is not None:
+            return cached.get("transcript"), cached.get("error")
+        return None, "This answer is already being finalized."
 
-    video_bytes = b""
+    stop_recording(state)
+    consent = recording_consent_granted(state)
+    recording_id = state.get(RECORDING_ID)
+    ensure_capture_manifest(
+        state,
+        interview_id=interview_id,
+        recording_id=recording_id,
+        policy_version=RECORDING_POLICY_VERSION,
+    )
+    result: dict[str, Any] = {"transcript": None, "error": None, "media_status": None}
     try:
-        video_bytes = video_recorder.finalize()
-    except ResourceBusyError as exc:
-        set_media_status(st.session_state, "failed", str(exc))
-    except Exception as exc:
-        set_media_status(st.session_state, "failed", str(exc))
-
-    if consent and recording_id:
-        saved_ids: list[int] = []
-        metadata_base = {
-            "question_number": int(question_number),
-            "consent_policy_version": RECORDING_POLICY_VERSION,
-        }
+        audio_bytes = b""
+        transcript_error: str | None = None
         try:
+            audio_bytes = capture_audio_bytes(recorder)
+        except LiveInterviewError as exc:
+            transcript_error = str(exc)
+        except Exception as exc:
+            transcript_error = f"Audio finalization failed: {exc}"
+        audio_snapshot = recorder.snapshot()
+        audio_capture_error = (
+            str(audio_snapshot.get("capture_error"))
+            if audio_snapshot.get("capture_error")
+            else None
+        )
+        if audio_capture_error and not transcript_error:
+            transcript_error = f"Audio capture problem: {audio_capture_error}"
+
+        video_bytes = b""
+        video_finalization_error: str | None = None
+        try:
+            video_bytes = video_recorder.finalize()
+        except ResourceBusyError as exc:
+            video_finalization_error = str(exc)
+        except Exception as exc:
+            video_finalization_error = str(exc)
+        video_snapshot = video_recorder.snapshot()
+        video_expected = bool(
+            video_snapshot.get("frames_encoded")
+            or video_snapshot.get("bytes_written")
+            or video_snapshot.get("duration_seconds")
+        )
+        video_capture_error = (
+            str(video_snapshot.get("error")) if video_snapshot.get("error") else None
+        )
+        if video_capture_error and not video_finalization_error:
+            video_finalization_error = video_capture_error
+        if video_bytes and video_capture_error:
+            video_finalization_error = video_capture_error
+            video_bytes = b""
+
+        set_stream_errors(
+            state,
+            answer_id=current_id,
+            audio_error=audio_capture_error or transcript_error,
+            video_error=video_finalization_error,
+        )
+        audio_stream_status = (
+            "finalized"
+            if audio_bytes
+            else ("failed" if audio_capture_error or transcript_error else "stopped")
+        )
+        video_stream_status = (
+            "finalized"
+            if video_bytes
+            else ("failed" if video_finalization_error else "stopped")
+        )
+        set_stream_statuses(
+            state,
+            answer_id=current_id,
+            audio_status=audio_stream_status,
+            video_status=video_stream_status,
+        )
+        manifest = update_capture_manifest_for_recorders(
+            state,
+            audio_status=audio_stream_status,
+            video_status=video_stream_status,
+            finalize=True,
+        )
+
+        if consent and recording_id:
+            if not claim_answer_operation(
+                state, OPERATION_PERSIST, answer_id=current_id
+            ):
+                set_media_status(
+                    state,
+                    "failed",
+                    "Recording storage was already finalized for this answer.",
+                )
+                recorder.clear()
+                video_recorder.clear()
+                result = {
+                    "transcript": None,
+                    "error": "Recording storage was already finalized for this answer.",
+                    "media_status": state.get(MEDIA_STATUS),
+                }
+                return None, result["error"]
+            saved_ids: list[int] = []
+            save_errors: list[str] = []
+            audio_saved = False
+            video_saved = False
+            metadata_base: dict[str, Any] = {
+                "question_number": int(question_number),
+                "consent_policy_version": RECORDING_POLICY_VERSION,
+            }
+            if manifest is not None:
+                metadata_base[CAPTURE_MANIFEST_KEY] = manifest
+
+            def _save_and_track(**kwargs: Any) -> None:
+                media_id = int(save_live_media(**kwargs))
+                add_pending_media_id(state, media_id)
+                saved_ids.append(media_id)
+
             if audio_bytes:
                 metadata = {
                     **metadata_base,
                     "sample_rate": audio_snapshot.get("sample_rate"),
                     "channels": audio_snapshot.get("channels"),
+                    "sample_format": audio_snapshot.get("sample_format"),
                     "chunk_count": audio_snapshot.get("chunk_count"),
                     "dropped_chunks": audio_snapshot.get("dropped_chunks"),
                 }
-                saved_ids.append(
-                    save_live_media(
+                try:
+                    _save_and_track(
                         recording_id=int(recording_id),
                         interview_id=int(interview_id),
                         user_id=user_id,
@@ -368,13 +514,17 @@ def _finalize_answer_media(
                         duration_seconds=_wav_duration_seconds(audio_bytes),
                         metadata=metadata,
                     )
-                )
+                    audio_saved = True
+                except ResourceBusyError as exc:
+                    save_errors.append(str(exc))
+                except LiveInterviewError as exc:
+                    save_errors.append(str(exc))
             if video_bytes:
                 metadata = {
                     **metadata_base,
-                    "codec": "h264",
-                    "container": "mp4",
-                    "fps": 30,
+                    "codec": video_snapshot.get("codec") or "h264",
+                    "container": video_snapshot.get("container") or "mp4",
+                    "fps": video_snapshot.get("fps") or 30,
                     "width": video_snapshot.get("width"),
                     "height": video_snapshot.get("height"),
                     "frames_encoded": video_snapshot.get("frames_encoded"),
@@ -382,8 +532,8 @@ def _finalize_answer_media(
                     "timestamp_adjustments": video_snapshot.get("timestamp_adjustments"),
                     "overflowed": video_snapshot.get("overflowed"),
                 }
-                saved_ids.append(
-                    save_live_media(
+                try:
+                    _save_and_track(
                         recording_id=int(recording_id),
                         interview_id=int(interview_id),
                         user_id=user_id,
@@ -393,36 +543,92 @@ def _finalize_answer_media(
                         duration_seconds=float(video_snapshot.get("duration_seconds") or 0.0),
                         metadata=metadata,
                     )
-                )
-            for media_id in saved_ids:
-                add_pending_media_id(st.session_state, media_id)
+                    video_saved = True
+                except ResourceBusyError as exc:
+                    save_errors.append(str(exc))
+                except LiveInterviewError as exc:
+                    save_errors.append(str(exc))
             if saved_ids:
+                if (
+                    audio_saved
+                    and (video_saved or not video_expected)
+                    and not save_errors
+                    and not video_finalization_error
+                    and not transcript_error
+                ):
+                    set_media_status(
+                        state,
+                        "saved",
+                        "Video and audio files are stored separately; capture manifest provides descriptive timing metadata only.",
+                    )
+                else:
+                    details = "; ".join(
+                        part
+                        for part in [video_finalization_error, *save_errors]
+                        if part
+                    )
+                    set_media_status(
+                        state,
+                        "partial",
+                        details or "Only part of the recording was saved. Saved files remain available for discard and retry.",
+                    )
+            else:
+                details = "; ".join(
+                    part for part in [video_finalization_error, *save_errors] if part
+                )
                 set_media_status(
-                    st.session_state,
-                    "saved",
-                    "Video and audio files are separate and are not synchronized." if len(saved_ids) > 1 else None,
+                    state,
+                    "failed",
+                    details or "No playable media was captured.",
+                )
+        else:
+            set_media_status(
+                state,
+                "not_saved",
+                "Recording storage consent is not active; temporary capture was discarded.",
+            )
+
+        transcript: str | None = None
+        if audio_bytes:
+            if claim_answer_operation(
+                state, OPERATION_TRANSCRIBE, answer_id=current_id
+            ):
+                try:
+                    transcript = transcribe_audio_bytes(audio_bytes)
+                except LiveInterviewError as exc:
+                    transcript_error = str(exc)
+                complete_answer_operation(
+                    state,
+                    OPERATION_TRANSCRIBE,
+                    answer_id=current_id,
+                    result={"transcript": transcript, "error": transcript_error},
                 )
             else:
-                set_media_status(st.session_state, "failed", "No playable media was captured.")
-        except ResourceBusyError as exc:
-            set_media_status(st.session_state, "failed", str(exc))
-        except LiveInterviewError as exc:
-            set_media_status(st.session_state, "failed", str(exc))
-    else:
-        set_media_status(
-            st.session_state,
-            "not_saved",
-            "Recording storage consent is not active; temporary capture was discarded.",
-        )
+                cached_transcription = operation_result(
+                    state, OPERATION_TRANSCRIBE, answer_id=current_id
+                )
+                if isinstance(cached_transcription, dict):
+                    transcript = cached_transcription.get("transcript")
+                    transcript_error = cached_transcription.get("error")
 
-    recorder.clear()
-    transcript: str | None = None
-    if audio_bytes:
-        try:
-            transcript = transcribe_audio_bytes(audio_bytes)
-        except LiveInterviewError as exc:
-            transcript_error = str(exc)
-    return transcript, transcript_error
+        recorder.clear()
+        video_recorder.clear()
+        result = {
+            "transcript": transcript,
+            "error": transcript_error,
+            "media_status": state.get(MEDIA_STATUS),
+        }
+        return transcript, transcript_error
+    except Exception as exc:
+        detail = str(exc)
+        mark_recorder_failure(state, detail, answer_id=current_id)
+        set_media_status(state, "failed", detail)
+        result = {"transcript": None, "error": detail, "media_status": state.get(MEDIA_STATUS)}
+        return None, detail
+    finally:
+        complete_answer_operation(
+            state, OPERATION_FINALIZE, answer_id=answer_id or current_id, result=result
+        )
 
 
 def _provider_caption() -> None:
@@ -469,8 +675,8 @@ def _render_consent_and_streams(locked: bool) -> None:
         )
         st.caption(
             "Recording storage is off by default. Interview consent alone never enables recording "
-            "storage. Video and audio are saved as separate files and are not muxed into one "
-            "synchronized recording."
+            "storage. Video and audio are saved as separate files with a descriptive capture manifest; "
+            "server receive timestamps do not guarantee hardware-level synchronization."
         )
         _provider_caption()
         if locked:
@@ -508,6 +714,7 @@ def _render_consent_and_streams(locked: bool) -> None:
 
 def _reset_live_workflow() -> None:
     reset_answer_state(st.session_state)
+    st.session_state[PENDING_MEDIA_IDS] = []
     clear_transcript(st.session_state)
     st.session_state[SUBMITTED_FINGERPRINT] = None
     st.session_state[INTERVIEW_ERROR] = None
@@ -548,6 +755,12 @@ def _render_resume(user_id: int, session_token: str) -> None:
                     st.session_state[RECORDING_ID] = int(details["id"])
                     st.session_state[RECORDING_CONSENT] = True
                     st.session_state[RECORDING_CONSENT_AT] = str(details.get("consent_at") or "")
+                    ensure_capture_manifest(
+                        st.session_state,
+                        interview_id=interview_id,
+                        recording_id=int(details["id"]),
+                        policy_version=str(details.get("consent_policy_version") or RECORDING_POLICY_VERSION),
+                    )
             except LiveInterviewError as exc:
                 st.session_state[MEDIA_ERROR] = str(exc)
             st.rerun()
@@ -637,6 +850,7 @@ def _render_setup(user_id: int, session_token: str) -> None:
         st.session_state[ACTIVE_INTERVIEW_ID] = int(state.interview_id)
         st.session_state[REPORT_ID] = None
         st.session_state[RECORDING_ID] = None
+        set_capture_manifest(st.session_state, None)
         if st.session_state.get(RECORDING_CONSENT) and not st.session_state.get(RECORDING_CONSENT_AT):
             set_recording_consent(st.session_state, True)
         try:
@@ -649,6 +863,12 @@ def _render_setup(user_id: int, session_token: str) -> None:
                 policy_version=RECORDING_POLICY_VERSION,
             )
             st.session_state[RECORDING_ID] = recording_id
+            ensure_capture_manifest(
+                st.session_state,
+                interview_id=int(state.interview_id),
+                recording_id=recording_id,
+                policy_version=RECORDING_POLICY_VERSION,
+            )
             set_media_status(st.session_state, "recording" if recording_consent_granted(st.session_state) else "not_consented")
         except LiveInterviewError as exc:
             set_media_status(st.session_state, "failed", str(exc))
@@ -713,6 +933,7 @@ def _render_report(user_id: int, session_token: str) -> None:
 
 def _finish_interview(interview_id: int, user_id: int, session_token: str) -> None:
     if st.session_state.get(RECORDING_ACTIVE):
+        answer_id = current_answer_id(st.session_state)
         stop_recording(st.session_state)
         question = st.session_state.get(RECORDING_QUESTION)
         if question is not None:
@@ -721,6 +942,7 @@ def _finish_interview(interview_id: int, user_id: int, session_token: str) -> No
                 question_number=int(question),
                 user_id=user_id,
                 session_token=session_token,
+                answer_id=answer_id,
             )
             if text:
                 set_transcript(st.session_state, int(question), text)
@@ -733,7 +955,7 @@ def _finish_interview(interview_id: int, user_id: int, session_token: str) -> No
                 recording_id=int(recording_id),
                 user_id=user_id,
                 session_token=session_token,
-                status="completed",
+                status=_recording_status_for_media_state(),
             )
         except LiveInterviewError as exc:
             set_media_status(st.session_state, "finalize_failed", str(exc))
@@ -782,14 +1004,10 @@ def _perform_abandon(interview_id: int, user_id: int, session_token: str) -> Non
     failed = False
     if st.session_state.get(RECORDING_ACTIVE):
         stop_recording(st.session_state)
-        question = st.session_state.get(RECORDING_QUESTION)
-        if question is not None:
-            _finalize_answer_media(
-                interview_id=interview_id,
-                question_number=int(question),
-                user_id=user_id,
-                session_token=session_token,
-            )
+    clear_capture_buffers(
+        st.session_state,
+        reason="The interview was abandoned before the active answer was finalized.",
+    )
     recording_id = st.session_state.get(RECORDING_ID)
     if recording_id:
         try:
@@ -797,6 +1015,7 @@ def _perform_abandon(interview_id: int, user_id: int, session_token: str) -> Non
                 delete_live_recording(
                     int(recording_id), user_id=user_id, session_token=session_token
                 )
+                st.session_state[PENDING_MEDIA_IDS] = []
                 set_media_status(st.session_state, "deleted", "Saved recordings were deleted.")
             else:
                 finish_live_recording(
@@ -840,6 +1059,12 @@ def _render_active(user_id: int, session_token: str) -> None:
             interview_id, user_id=user_id, session_token=session_token
         )
     except LiveInterviewError as exc:
+        report_recorder_failure(
+            st.session_state,
+            f"Live interview state could not be loaded: {exc}",
+            answer_id=current_answer_id(st.session_state),
+        )
+        clear_capture_data(st.session_state)
         _stop_live_streams()
         st.session_state[ACTIVE_INTERVIEW_ID] = None
         st.session_state[INTERVIEW_ERROR] = str(exc)
@@ -938,6 +1163,10 @@ def _render_active(user_id: int, session_token: str) -> None:
     )
     if st.session_state.get(MEDIA_ERROR):
         error_state("Recording problem", str(st.session_state[MEDIA_ERROR]))
+    if st.session_state.get(AUDIO_ERROR):
+        error_state("Audio recording problem", str(st.session_state[AUDIO_ERROR]))
+    if st.session_state.get(VIDEO_ERROR):
+        error_state("Video recording problem", str(st.session_state[VIDEO_ERROR]))
     if video_snapshot.get("error"):
         error_state("Camera recording problem", str(video_snapshot["error"]))
     if recording:

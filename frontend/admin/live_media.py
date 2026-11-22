@@ -10,6 +10,7 @@ from services.live_interview_workflow import (
     get_live_recording_details,
     list_admin_live_recordings,
     read_live_media,
+    retry_live_media_deletions,
     verify_live_media,
 )
 
@@ -114,6 +115,22 @@ def show_admin_live_media() -> None:
     st.session_state.setdefault(DELETE_PENDING, False)
     st.session_state.setdefault(DELETE_RECORDING_ID, None)
     st.session_state.setdefault(DELETE_CONFIRMED, False)
+
+    if st.button(
+        "Retry pending deletions",
+        icon=":material/restart_alt:",
+        key="_admin_live_media_retry_pending",
+    ):
+        try:
+            report = retry_live_media_deletions(admin_id=admin_id)
+            items = report.get("recordings", []) + report.get("media", [])
+            pending = [item for item in items if item.get("status") == "pending_delete"]
+            if pending:
+                st.warning(f"{len(pending)} deletion(s) are still pending. Please try again later.")
+            else:
+                st.success("No pending deletions remain.")
+        except LiveInterviewError as exc:
+            error_state("Could not retry pending deletions.", str(exc))
 
     search_col, status_col = st.columns([3, 1])
     search = search_col.text_input(

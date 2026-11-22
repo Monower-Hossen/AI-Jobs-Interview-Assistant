@@ -15,13 +15,18 @@ class RecordingVideoProcessor(PreviewVideoProcessor):
     def __init__(self, recorder: LiveVideoRecorder):
         super().__init__()
         self._recorder = recorder
+        self._generation: int | None = None
 
     def recv(self, frame):
         if self._recorder.enabled:
-            try:
-                self._recorder.enqueue(frame)
-            except Exception as exc:
-                self._recorder.set_error(str(exc))
+            generation = self._recorder.generation
+            if self._generation is None:
+                self._generation = generation
+            if self._generation == generation:
+                try:
+                    self._recorder.enqueue(frame, generation=generation)
+                except Exception as exc:
+                    self._recorder.set_error(str(exc))
         return frame
 
     async def recv_queued(self, frames):
@@ -62,14 +67,19 @@ class RecordingAudioProcessor(SilentAudioProcessor):
     def __init__(self, event_queue: BoundedAudioEventQueue, recorder: LiveAudioRecorder):
         super().__init__(event_queue)
         self._recorder = recorder
+        self._generation: int | None = None
 
     def recv(self, frame):
         result = super().recv(frame)
         if self._recorder.enabled:
-            try:
-                self._recorder.append_frame(frame)
-            except Exception as exc:
-                self._recorder.set_capture_error(str(exc))
+            generation = self._recorder.generation
+            if self._generation is None:
+                self._generation = generation
+            if self._generation == generation:
+                try:
+                    self._recorder.append_frame(frame)
+                except Exception as exc:
+                    self._recorder.set_capture_error(str(exc))
         return result
 
     def on_ended(self) -> None:

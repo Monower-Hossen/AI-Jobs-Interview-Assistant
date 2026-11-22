@@ -5,6 +5,25 @@ from collections.abc import MutableMapping
 from datetime import UTC, datetime
 
 from services.job_interview_constants import MAX_ANSWER_SECONDS
+from services.live_recorder_lifecycle import (
+    AUDIO_ERROR,
+    RECORDER_LAST_FAILURE,
+    RECORDER_LIFECYCLE,
+    RECORDER_LIFECYCLE_CONDITION,
+    VIDEO_ERROR,
+    abandon_recorder_lifecycle,
+    begin_answer,
+    current_answer_id,
+    initialize_recorder_lifecycle,
+    mark_recorder_failure,
+    mark_recording,
+    mark_stopping,
+    record_media_status,
+    recorder_lifecycle_snapshot,
+    reset_recorder_lifecycle,
+    set_stream_errors,
+    set_stream_statuses,
+)
 from services.live_recording_manifest import (
     create_capture_manifest,
     mark_manifest_finalized,
@@ -57,6 +76,11 @@ LIVE_INTERVIEW_STATE_KEYS = (
     PENDING_MEDIA_IDS,
     MEDIA_STATUS,
     MEDIA_ERROR,
+    AUDIO_ERROR,
+    VIDEO_ERROR,
+    RECORDER_LIFECYCLE,
+    RECORDER_LIFECYCLE_CONDITION,
+    RECORDER_LAST_FAILURE,
     RECORDING_ACTIVE,
     RECORDING_QUESTION,
     ANSWER_STARTED_AT,
@@ -89,6 +113,10 @@ def initialize_live_interview_state(state: MutableMapping) -> None:
     state.setdefault(PENDING_MEDIA_IDS, [])
     state.setdefault(MEDIA_STATUS, "not_started")
     state.setdefault(MEDIA_ERROR, None)
+    state.setdefault(AUDIO_ERROR, None)
+    state.setdefault(VIDEO_ERROR, None)
+    state.setdefault(RECORDER_LAST_FAILURE, None)
+    initialize_recorder_lifecycle(state)
     state.setdefault(INTERVIEW_ERROR, None)
     get_recorder(state)
     get_video_recorder(state)
@@ -113,15 +141,18 @@ def get_video_recorder(state: MutableMapping) -> LiveVideoRecorder:
 
 
 def reset_answer_state(state: MutableMapping) -> None:
+    abandon_recorder_lifecycle(state, reason="The answer buffer was reset before finalization.")
     get_recorder(state).clear()
     get_video_recorder(state).clear()
-    state[PENDING_MEDIA_IDS] = []
     state[MEDIA_STATUS] = "idle"
     state[MEDIA_ERROR] = None
+    state[AUDIO_ERROR] = None
+    state[VIDEO_ERROR] = None
     state[RECORDING_ACTIVE] = False
     state[RECORDING_QUESTION] = None
     state[ANSWER_STARTED_AT] = None
     state[TRANSCRIPT_ERROR] = None
+    reset_recorder_lifecycle(state)
 
 
 def clear_transcript(state: MutableMapping) -> None:
@@ -191,37 +222,85 @@ def update_capture_manifest_for_recorders(
     manifest = update_video_manifest(manifest, video_snapshot, status=video_status)
     if finalize:
         manifest = mark_manifest_finalized(manifest, ended_monotonic_ns=monotonic_now_ns(), ended_utc=utc_now_iso())
+    lifecycle = recorder_lifecycle_snapshot(state)
+    manifest.setdefault("diagnostics", {})["recorder_lifecycle"] = {
+        "state": lifecycle.get("state"),
+        "answer_id": lifecycle.get("answer_id"),
+        "question_number": lifecycle.get("question_number"),
+    }
     state[RECORDING_MANIFEST] = manifest
     return manifest
 
 
 def start_recording(
     state: MutableMapping, question_number: int, *, record_video: bool = False
-) -> None:
+) -> str:
+    lifecycle = recorder_lifecycle_snapshot(state)
+    active_states = {"STARTING", "RECORDING", "STOPPING", "FINALIZING"}
+    existing_id = current_answer_id(state)
+    if (
+        existing_id
+        and lifecycle.get("state") in active_states
+        and lifecycle.get("question_number") is not None
+        and int(lifecycle["question_number"]) == int(question_number)
+    ):
+        return existing_id
     reset_answer_state(state)
     clear_transcript(state)
     interview_id = state.get(ACTIVE_INTERVIEW_ID)
     recording_id = state.get(RECORDING_ID)
+    answer_id = begin_answer(
+        state,
+        question_number=int(question_number),
+        interview_id=interview_id,
+    )
     ensure_capture_manifest(state, interview_id=interview_id, recording_id=recording_id)
     recorder = get_recorder(state)
+    video_recorder = get_video_recorder(state)
     recorder.set_enabled(True)
-    get_video_recorder(state).set_enabled(bool(record_video))
+    video_recorder.set_enabled(bool(record_video))
+    audio_snapshot = recorder.snapshot()
+    video_snapshot = video_recorder.snapshot()
+    audio_error = str(audio_snapshot.get("capture_error")) if audio_snapshot.get("capture_error") else None
+    video_error = str(video_snapshot.get("error")) if video_snapshot.get("error") else None
+    mark_recording(state, answer_id=answer_id, record_video=bool(record_video))
+    set_stream_statuses(
+        state,
+        answer_id=answer_id,
+        audio_status="failed" if audio_error else "capturing",
+        video_status=("failed" if video_error else "capturing") if record_video else "not_started",
+    )
+    set_stream_errors(
+        state,
+        answer_id=answer_id,
+        audio_error=audio_error,
+        video_error=video_error if record_video else None,
+    )
     state[RECORDING_ACTIVE] = True
     state[RECORDING_QUESTION] = int(question_number)
     state[ANSWER_STARTED_AT] = datetime.now(UTC).replace(tzinfo=None).isoformat()
     state[INTERVIEW_ERROR] = None
     update_capture_manifest_for_recorders(
         state,
-        audio_status="capturing",
-        video_status="capturing" if record_video else "not_started",
+        audio_status="failed" if audio_error else "capturing",
+        video_status=("failed" if video_error else "capturing") if record_video else "not_started",
     )
+    return answer_id
 
 
-def stop_recording(state: MutableMapping) -> None:
+def stop_recording(state: MutableMapping) -> bool:
+    answer_id = current_answer_id(state)
+    changed = mark_stopping(state, answer_id=answer_id)
     get_recorder(state).set_enabled(False)
     get_video_recorder(state).set_enabled(False)
     state[RECORDING_ACTIVE] = False
-    update_capture_manifest_for_recorders(state, audio_status="stopped", video_status="stopped")
+    lifecycle = recorder_lifecycle_snapshot(state)
+    update_capture_manifest_for_recorders(
+        state,
+        audio_status=lifecycle.get("audio_status") or "stopped",
+        video_status=lifecycle.get("video_status") or "stopped",
+    )
+    return changed
 
 
 def set_transcript(state: MutableMapping, question_number: int, text: str) -> None:
@@ -267,6 +346,7 @@ def set_recording_consent(state: MutableMapping, granted: bool) -> None:
 def set_media_status(state: MutableMapping, status: str, error: str | None = None) -> None:
     state[MEDIA_STATUS] = str(status)
     state[MEDIA_ERROR] = str(error) if error else None
+    record_media_status(state, str(status), answer_id=current_answer_id(state))
 
 
 def add_pending_media_id(state: MutableMapping, media_id: int) -> None:
@@ -293,6 +373,7 @@ def mark_answer_submitted(
     state: MutableMapping, interview_id: int, question_number: int, text: str
 ) -> None:
     state[SUBMITTED_FINGERPRINT] = answer_fingerprint(interview_id, question_number, text)
+    record_media_status(state, str(state.get(MEDIA_STATUS) or "saved"))
     state[PENDING_MEDIA_IDS] = []
     reset_answer_state(state)
     clear_transcript(state)
@@ -300,6 +381,7 @@ def mark_answer_submitted(
 
 def clear_interview_state(state: MutableMapping) -> None:
     reset_answer_state(state)
+    state[PENDING_MEDIA_IDS] = []
     clear_transcript(state)
     state[ACTIVE_INTERVIEW_ID] = None
     state[REPORT_ID] = None
@@ -312,3 +394,29 @@ def clear_interview_state(state: MutableMapping) -> None:
     state[SUBMITTED_FINGERPRINT] = None
     state[TTS_COUNTER] = 0
     state[INTERVIEW_ERROR] = None
+
+
+def get_recorder_lifecycle(state: MutableMapping) -> dict:
+    return recorder_lifecycle_snapshot(state)
+
+
+def report_recorder_failure(
+    state: MutableMapping, message: str, *, answer_id: str | None = None
+) -> None:
+    detail = str(message)
+    mark_recorder_failure(state, detail, answer_id=answer_id)
+    state[RECORDING_ACTIVE] = False
+    state[MEDIA_STATUS] = "failed"
+    state[MEDIA_ERROR] = detail
+
+
+def clear_capture_data(state: MutableMapping) -> None:
+    get_recorder(state).clear()
+    get_video_recorder(state).clear()
+    state[RECORDING_ACTIVE] = False
+
+
+def clear_capture_buffers(state: MutableMapping, *, reason: str | None = None) -> None:
+    abandon_recorder_lifecycle(state, reason=reason)
+    clear_capture_data(state)
+    reset_recorder_lifecycle(state)

@@ -9,6 +9,7 @@ from services.live_interview_workflow import (
     get_live_recording_details,
     list_live_recordings,
     read_live_media,
+    retry_live_media_deletions,
     verify_live_media,
 )
 
@@ -128,6 +129,21 @@ def show_live_recording_history() -> None:
     if not user_id or not token:
         error_state("Please sign in to view your recordings.")
         return
+    if st.button(
+        "Retry pending deletions",
+        icon=":material/restart_alt:",
+        key="_live_media_retry_pending",
+    ):
+        try:
+            report = retry_live_media_deletions(user_id=user_id, session_token=token)
+            items = report.get("recordings", []) + report.get("media", [])
+            pending = [item for item in items if item.get("status") == "pending_delete"]
+            if pending:
+                st.warning(f"{len(pending)} deletion(s) are still pending. Please try again later.")
+            else:
+                st.success("No pending deletions remain.")
+        except LiveInterviewError as exc:
+            error_state("Could not retry pending deletions.", str(exc))
     try:
         recordings = list_live_recordings(user_id=user_id, session_token=token)
     except LiveInterviewError as exc:
