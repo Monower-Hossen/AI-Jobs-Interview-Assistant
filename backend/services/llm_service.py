@@ -20,6 +20,11 @@ T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
+GEMINI_KEY_HINT = (
+    "Set GEMINI_API_KEY (or GOOGLE_API_KEY for backward compatibility) in .env "
+    "or the provider settings."
+)
+
 
 class GeminiAPIError(Exception):
     pass
@@ -481,7 +486,7 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key=None, model=None, base_url=None):
         api_key = api_key or settings.gemini_api_key
         if not api_key:
-            raise ValueError("Gemini API key not provided")
+            raise ValueError(f"Gemini API key not provided. {GEMINI_KEY_HINT}")
         self.api_key = api_key
         self.model = model or os.getenv("GEMINI_MODEL", settings.gemini_model)
         self.base_url = base_url
@@ -548,6 +553,11 @@ class GeminiProvider(LLMProvider):
                     config=config,
                 )
             except Exception as exc:
+                if is_auth_error(exc):
+                    raise GeminiAPIError(
+                        f"Gemini authentication failed for {model}: {_error_message(exc)}. "
+                        f"{GEMINI_KEY_HINT}"
+                    ) from exc
                 wrapped = GeminiAPIError(f"Gemini SDK error ({model}): {_error_message(exc)}")
                 if attempt + 1 >= _max_attempts() or not is_retryable_error(wrapped):
                     raise wrapped from exc
@@ -637,6 +647,15 @@ class OllamaProvider(_HTTPProvider):
         )
 
 
+def _aggregate_provider_error(errors: list[str]) -> RuntimeError:
+    prefix = (
+        "Gemini request failed"
+        if any(item.startswith("gemini:") for item in errors)
+        else "All providers failed"
+    )
+    return RuntimeError(f"{prefix}. {'; '.join(errors)}")
+
+
 def _configured_model(name: str) -> str:
     values = {
         "gemini": ("GEMINI_MODEL", settings.gemini_model),
@@ -658,10 +677,9 @@ class ProviderManager:
         self.providers = self._build_chain()
 
     def _register_defaults(self) -> None:
-        self.register_provider("groq", GroqProvider)
         self.register_provider("gemini", GeminiProvider)
+        self.register_provider("groq", GroqProvider)
         self.register_provider("ollama", OllamaProvider)
-        self.register_provider("mistral", MistralProvider)
 
     def register_provider(
         self,
@@ -682,12 +700,17 @@ class ProviderManager:
         mode = (settings.ai_provider_mode or "auto").strip().lower()
         manual_mode = mode in {"manual", "strict", "fixed", "single"}
         fallback = bool(settings.ai_fallback_enabled) and not manual_mode
+        requested = requested.strip().lower()
+        if requested == "mistral":
+            requested = "gemini"
         priority: list[str] = []
         for item in (settings.provider_priority or "").split(","):
             name = item.strip().lower()
+            if name == "mistral":
+                continue
             if name and name not in priority:
                 priority.append(name)
-        return requested.strip().lower(), mode, fallback, priority
+        return requested, mode, fallback, priority
 
     def _build_chain(self) -> list[LLMProvider]:
         requested, mode, fallback, priority = self._routing_config()
@@ -842,7 +865,7 @@ class ProviderManager:
 
         if not errors:
             errors.append("all providers temporarily unavailable")
-        raise RuntimeError(f"All providers failed. {'; '.join(errors)}") from last_exc
+        raise _aggregate_provider_error(errors) from last_exc
 
     def generate_structured(self, prompt: str, response_model: type[T], **kwargs) -> T:
         errors: list[str] = []
@@ -877,7 +900,7 @@ class ProviderManager:
 
         if not errors:
             errors.append("all providers temporarily unavailable")
-        raise RuntimeError(f"All providers failed. {'; '.join(errors)}") from last_exc
+        raise _aggregate_provider_error(errors) from last_exc
 
     def status(self) -> dict[str, Any]:
         requested, mode, fallback, priority = self._routing_config()

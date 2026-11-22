@@ -201,22 +201,20 @@ Use `.env.example` as the complete, secrets-free variable contract. The most imp
 ```bash
 # Provider routing
 AI_PROVIDER_MODE=auto
-AI_PRIMARY_PROVIDER=groq
+AI_PRIMARY_PROVIDER=gemini
 AI_FALLBACK_ENABLED=true
 LLM_PROVIDER=auto
-PROVIDER_PRIORITY=groq,gemini,ollama,mistral
+PROVIDER_PRIORITY=gemini,groq,ollama
 LLM_MIN_REQUEST_INTERVAL=0
 AI_REQUEST_TIMEOUT=60
 AI_MAX_RETRIES=2
 
 # Provider models and fallbacks
-GROQ_MODEL=openai/gpt-oss-20b
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash
 GEMINI_API_VERSION=v1beta
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-GEMINI_FALLBACK_MODELS=gemini-2.5-flash
-MISTRAL_MODEL=mistral-small-latest
-MISTRAL_BASE_URL=https://api.mistral.ai/v1
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash
+GROQ_MODEL=openai/gpt-oss-20b
 ENABLE_OLLAMA=false
 
 # Storage and analysis limits
@@ -229,26 +227,24 @@ MAX_CONTEXT_CHARS=6000
 ```
 
 Relative storage paths are resolved against the project root, so startup does not depend on the
-current working directory. Gemini model availability depends on the configured API key and endpoint;
-`gemini-2.5-flash` is the default example and can be overridden with `GEMINI_MODEL`.
+current working directory. Gemini is the primary provider. Set `GEMINI_API_KEY` in `.env`;
+`GOOGLE_API_KEY` remains supported as a backward-compatible alias. Model availability depends on
+the API key and endpoint; use `GEMINI_MODEL` to select a model available to your key. The verified
+default is `gemini-3.5-flash`. Mistral is no longer selectable and is never used as a fallback.
 
-### Groq API Setup
+### Gemini API Setup (primary provider)
+1. Go to https://aistudio.google.com/apikey
+2. Create a new API key and enable the Generative Language API.
+3. Add to `.env` as `GEMINI_API_KEY`.
+4. Optionally set `GEMINI_MODEL` to another model available to your key.
+5. Verify with `Settings -> Providers -> Check provider health` or see `docs/AI_PROVIDER_SETUP.md`.
+6. Free tier and quota limits depend on the Google AI account.
+
+### Groq API Setup (optional fallback)
 1. Go to https://console.groq.com/keys
 2. Create a new API key
 3. Add to `.env` as `GROQ_API_KEY`
 4. Free tier: 14,400 requests/day, 6,000 tokens/minute
-
-### Gemini API Setup
-1. Go to https://aistudio.google.com/apikey
-2. Create a new API key
-3. Add to `.env` as `GEMINI_API_KEY`
-4. Free tier available
-
-### Mistral API Setup
-1. Go to https://console.mistral.ai/
-2. Create a new API key
-3. Add to `.env` as `MISTRAL_API_KEY`
-4. Free tier available
 
 ## Running the Application
 
