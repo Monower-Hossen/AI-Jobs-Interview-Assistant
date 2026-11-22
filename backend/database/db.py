@@ -12,6 +12,7 @@ from sqlalchemy.pool import NullPool
 engine = None
 SessionLocal: sessionmaker | None = None
 _MAX_DETACH_REFRESH = 50
+_COMMIT_SUCCEEDED_KEY = "phase32_commit_succeeded"
 
 
 def _detach_all(db: Session) -> None:
@@ -234,9 +235,11 @@ def get_db_context() -> Generator[Session, None, None]:
 
     assert SessionLocal is not None
     db = SessionLocal()
+    db.info[_COMMIT_SUCCEEDED_KEY] = False
     try:
         yield db
         db.commit()
+        db.info[_COMMIT_SUCCEEDED_KEY] = True
     except Exception:
         try:
             db.rollback()

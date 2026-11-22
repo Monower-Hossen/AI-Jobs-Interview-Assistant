@@ -124,6 +124,7 @@ class LiveAudioRecorder:
         self._dropped_chunks = 0
         self._overflowed = False
         self._enabled = False
+        self._generation = 0
         self._capture_error: str | None = None
         self._flushed = False
         self._normalizer = AudioNormalizer()
@@ -135,9 +136,17 @@ class LiveAudioRecorder:
         with self._lock:
             return self._enabled
 
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
-            self._enabled = bool(enabled)
+            should_enable = bool(enabled)
+            if should_enable and not self._enabled:
+                self._generation += 1
+            self._enabled = should_enable
 
     @property
     def capture_error(self) -> str | None:
@@ -276,6 +285,7 @@ class LiveAudioRecorder:
             self._dropped_chunks = 0
             self._overflowed = False
             self._enabled = False
+            self._generation += 1
             self._capture_error = None
             self._flushed = False
             self._normalizer = AudioNormalizer()
