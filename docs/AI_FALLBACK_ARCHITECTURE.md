@@ -14,7 +14,7 @@ Service / UI
     -> get_llm_service()
     -> LLMService.generate() or generate_structured()
     -> ProviderManager
-    -> provider chain (Groq -> Gemini -> Ollama -> Mistral)
+    -> provider chain (Gemini -> Groq -> Ollama)
     -> LLMResponse / validated Pydantic model
 ```
 
@@ -31,8 +31,9 @@ Service / UI
 
 ## Provider adapters
 
-- `GroqProvider`, `MistralProvider`, `OllamaProvider`: OpenAI-compatible HTTP transport via httpx.
+- `GroqProvider`, `OllamaProvider`: OpenAI-compatible HTTP transport via httpx.
 - `GeminiProvider`: official `google-genai` SDK using `client.models.generate_content`.
+- Mistral is not registered, selectable, or included in any fallback chain.
 - `LLMProvider` is the common interface: `generate`, `generate_structured`, and `get_model_name`.
 
 The Gemini adapter maps `max_tokens` to `max_output_tokens` and `json_mode` to
@@ -41,9 +42,10 @@ The Gemini adapter maps `max_tokens` to `max_output_tokens` and `json_mode` to
 ## Routing policy
 
 `AI_PROVIDER_MODE=auto` builds a chain from `AI_PRIMARY_PROVIDER` (or the legacy alias
-`LLM_PROVIDER`) followed by the deduplicated entries in `PROVIDER_PRIORITY`. The effective fallback
-flag is `AI_FALLBACK_ENABLED` combined with the mode: `manual`, `strict`, `fixed`, and `single`
-disable fallback even if the raw flag is true.
+`LLM_PROVIDER`) followed by the deduplicated entries in `PROVIDER_PRIORITY`. Gemini is the default
+primary provider. `mistral` entries in either setting are ignored because Mistral is no longer
+registered. The effective fallback flag is `AI_FALLBACK_ENABLED` combined with the mode: `manual`,
+`strict`, `fixed`, and `single` disable fallback even if the raw flag is true.
 
 Ollama is registered but skipped unless `ENABLE_OLLAMA=true` or it is explicitly selected.
 
@@ -54,7 +56,8 @@ Ollama is registered but skipped unless `ENABLE_OLLAMA=true` or it is explicitly
 3. Rate-limit responses set a per-provider cooldown.
 4. Repeated failures open a circuit for `PROVIDER_CIRCUIT_BREAKER_COOLDOWN` seconds.
 5. The manager routes the unchanged prompt and options to the next eligible provider.
-6. If no provider succeeds, a single aggregated `RuntimeError` is raised.
+6. If no provider succeeds, a single aggregated `RuntimeError` is raised. When Gemini participated,
+   the message begins with `Gemini request failed` and includes the redacted Gemini error detail.
 
 Errors are sanitized before logging. API keys are redacted and never included in logs or UI.
 
