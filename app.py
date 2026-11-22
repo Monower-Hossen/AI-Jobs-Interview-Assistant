@@ -36,10 +36,13 @@ backend_root = project_root / "backend"
 if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 
-from config.settings import settings
 from database.db import init_database
 from services.auth_service import get_account, is_admin_role
-from services.llm_service import check_provider_health, get_provider_status
+from services.llm_service import (
+    check_provider_health,
+    get_provider_registry,
+    get_provider_status,
+)
 
 from frontend.shared.auth_ui import show_auth_page, sign_out
 
@@ -118,6 +121,48 @@ def _current_account():
     return account
 
 
+def _render_provider_sidebar(button_key: str) -> None:
+    registry = get_provider_registry()
+    try:
+        status = get_provider_status()
+        active_provider = str(status.get("active") or "none").upper()
+        providers = status.get("providers", {})
+        ready = [name for name in registry if providers.get(name, {}).get("configured")]
+    except Exception:
+        active_provider = "UNAVAILABLE"
+        ready = []
+
+    st.sidebar.caption(
+        f"Provider: {active_provider} · Ready: {', '.join(ready) if ready else 'none'}"
+    )
+    if not ready:
+        st.sidebar.warning(
+            "No provider configured. Ask an administrator to add a key.",
+            icon=":material/key:",
+        )
+
+    if st.sidebar.button(
+        "Check provider health",
+        icon=":material/cloud:",
+        width="stretch",
+        key=button_key,
+    ):
+        try:
+            with st.spinner("Checking providers…"):
+                health = check_provider_health()
+        except Exception:
+            st.sidebar.warning("Provider check unavailable.", icon=":material/warning:")
+            return
+        for name, info in health.items():
+            message = f"{name}: {info.get('status', 'Unavailable')}"
+            if info.get("error"):
+                message += f" · {str(info['error'])[:80]}"
+            if info.get("healthy"):
+                st.sidebar.success(message, icon=":material/check_circle:")
+            else:
+                st.sidebar.warning(message, icon=":material/warning:")
+
+
 def _render_sidebar(account) -> None:
     st.sidebar.markdown("### AI Interview Intelligence")
     st.sidebar.caption(f"Workspace • {str(st.session_state.user_session_id)[:8]}")
@@ -134,49 +179,7 @@ def _render_sidebar(account) -> None:
         ):
             sign_out()
 
-    try:
-        status = get_provider_status()
-        active_provider = status["active"].upper()
-        ready = [name for name, info in status["providers"].items() if info["configured"]]
-    except Exception:
-        active_provider = (settings.ai_primary_provider or settings.llm_provider).upper()
-        ready = [
-            name
-            for name, configured in (
-                ("gemini", settings.gemini_api_key),
-                ("groq", settings.groq_api_key),
-                ("ollama", settings.enable_ollama),
-            )
-            if configured
-        ]
-
-    st.sidebar.caption(
-        f"Provider: {active_provider} • " f"Ready: {', '.join(ready) if ready else 'none'}"
-    )
-    if not ready:
-        st.sidebar.warning(
-            "No provider configured. Ask an administrator to add a key.",
-            icon=":material/key:",
-        )
-
-    if st.sidebar.button(
-        "Check provider health",
-        icon=":material/cloud:",
-        width="stretch",
-        key="sidebar_provider_health",
-    ):
-        try:
-            with st.spinner("Checking providers…"):
-                health = check_provider_health()
-        except Exception as exc:
-            st.sidebar.warning(f"Provider check unavailable: {exc}", icon=":material/warning:")
-            health = {}
-        for name, info in health.items():
-            if info.get("healthy"):
-                st.sidebar.success(f"{name}: {info.get('model')}", icon=":material/check_circle:")
-            else:
-                error = str(info.get("error") or "Unavailable")
-                st.sidebar.warning(f"{name}: {error[:90]}", icon=":material/warning:")
+    _render_provider_sidebar("sidebar_provider_health")
 
 
 def _render_user_sidebar(account) -> None:
@@ -196,49 +199,7 @@ def _render_user_sidebar(account) -> None:
             sign_out()
 
     st.sidebar.caption("Workspace navigation")
-    try:
-        status = get_provider_status()
-        active_provider = status["active"].upper()
-        ready = [name for name, info in status["providers"].items() if info["configured"]]
-    except Exception:
-        active_provider = (settings.ai_primary_provider or settings.llm_provider).upper()
-        ready = [
-            name
-            for name, configured in (
-                ("gemini", settings.gemini_api_key),
-                ("groq", settings.groq_api_key),
-                ("ollama", settings.enable_ollama),
-            )
-            if configured
-        ]
-
-    st.sidebar.caption(
-        f"Provider: {active_provider} · Ready: {', '.join(ready) if ready else 'none'}"
-    )
-    if not ready:
-        st.sidebar.warning(
-            "No provider configured. Ask an administrator to add a key.",
-            icon=":material/key:",
-        )
-
-    if st.sidebar.button(
-        "Check provider health",
-        icon=":material/cloud:",
-        width="stretch",
-        key="user_sidebar_provider_health",
-    ):
-        try:
-            with st.spinner("Checking providers…"):
-                health = check_provider_health()
-        except Exception as exc:
-            st.sidebar.warning(f"Provider check unavailable: {exc}", icon=":material/warning:")
-            health = {}
-        for name, info in health.items():
-            if info.get("healthy"):
-                st.sidebar.success(f"{name}: {info.get('model')}", icon=":material/check_circle:")
-            else:
-                error = str(info.get("error") or "Unavailable")
-                st.sidebar.warning(f"{name}: {error[:90]}", icon=":material/warning:")
+    _render_provider_sidebar("user_sidebar_provider_health")
 
 
 def _admin_pages() -> dict:
