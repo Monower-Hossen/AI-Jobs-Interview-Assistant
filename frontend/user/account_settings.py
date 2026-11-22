@@ -1,5 +1,6 @@
 import streamlit as st
 from services.auth_service import AuthError, get_account, get_account_activity, log_event
+from services.llm_service import get_provider_registry
 from services.preferences_service import get_user_preferences, update_user_preferences
 
 from frontend.shared.change_password import render_password_change_form
@@ -13,7 +14,7 @@ from frontend.shared.components import (
 
 DIFFICULTIES = ("easy", "medium", "hard")
 INTERVIEW_TYPES = ("Full Interview", "Technical", "Behavioral", "HR", "Mixed")
-PROVIDERS = ("auto", "gemini", "groq", "ollama")
+PROVIDERS = ("auto",) + tuple(get_provider_registry())
 LEARNING_FORMATS = ("mixed", "articles", "videos", "practice")
 NOTIFICATION_LABELS = {
     "interview_reminders": "Interview reminders",
@@ -292,11 +293,14 @@ def _render_workspace(user_id: int) -> None:
         from services.llm_service import get_provider_status
 
         status = get_provider_status()
-    except Exception as exc:
-        error_state("Provider status is unavailable.", str(exc))
+    except Exception:
+        error_state("Provider status is unavailable.", "The provider registry could not be read.")
     else:
+        providers = status.get("providers", {})
         ready = [
-            name for name, info in status.get("providers", {}).items() if info.get("configured")
+            name
+            for name in get_provider_registry()
+            if providers.get(name, {}).get("configured")
         ]
         st.write(f"**Active provider:** {str(status.get('active', 'none')).title()}")
         st.write(f"**Configured providers:** {', '.join(ready) if ready else 'none'}")

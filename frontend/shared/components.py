@@ -26,9 +26,10 @@ def kpi_row(items: Sequence[tuple[str, str | int | float, str | int | float | No
 
 
 def ai_provider_status() -> None:
-    from config.settings import settings
     from services.llm_service import (
+        HEALTH_NOT_CHECKED,
         check_provider_health,
+        get_provider_registry,
         get_provider_status,
         test_provider_connection,
     )
@@ -36,12 +37,8 @@ def ai_provider_status() -> None:
     def _time(value: float | None) -> str:
         return time.strftime("%H:%M:%S", time.localtime(value)) if value else "-"
 
-    names = ["gemini", "groq", "ollama"]
-    models = {
-        "gemini": settings.gemini_model,
-        "groq": settings.groq_model,
-        "ollama": settings.ollama_model,
-    }
+    registry = get_provider_registry()
+    names = list(registry)
     health_key = "_ai_provider_health_results"
     success_key = "_ai_provider_last_success"
     if health_key not in st.session_state:
@@ -72,6 +69,17 @@ def ai_provider_status() -> None:
             "providers": {},
         }
 
+    for name in names:
+        if name not in health:
+            provider_info = status.get("providers", {}).get(name, {})
+            health[name] = {
+                "status": HEALTH_NOT_CHECKED,
+                "configured": provider_info.get("configured", False),
+                "model": provider_info.get("model") or registry[name]["model"],
+                "error": None,
+            }
+    st.session_state[health_key] = health
+
     fallback_label = (
         "Triggered"
         if status.get("fallback_triggered")
@@ -80,7 +88,7 @@ def ai_provider_status() -> None:
     with st.container(border=True):
         st.subheader("AI provider health monitor", icon=":material/cloud:")
         st.caption(
-            "Connection status is based on a successful live request. API keys are never displayed."
+            "Status comes from the provider health service. Keys are never displayed."
         )
         with st.container(horizontal=True, wrap=True):
             st.metric("Active provider", str(status.get("active", "none")).title(), border=True)
@@ -105,7 +113,7 @@ def ai_provider_status() -> None:
         with st.container(horizontal=True, wrap=True):
             for name in names:
                 if st.button(
-                    f"Test {name.title()}",
+                    f"Test {registry[name]['label']}",
                     icon=":material/cloud_done:",
                     key=f"_ai_provider_test_{name}",
                 ):
@@ -115,12 +123,8 @@ def ai_provider_status() -> None:
         rows = []
         for name in names:
             info = health.get(name, {})
-            connection = (
-                "Connected" if info.get("healthy") else ("Failed" if info else "Not checked")
-            )
-            latency = info.get("latency_ms")
             model_info = status.get("providers", {}).get(name, {})
-            model = model_info.get("model") or info.get("model") or models[name]
+            latency = info.get("latency_ms")
             fallback = (
                 "Used"
                 if status.get("fallback_triggered") and status.get("last_used_provider") == name
@@ -128,9 +132,14 @@ def ai_provider_status() -> None:
             )
             rows.append(
                 {
-                    "Provider": name.title(),
-                    "Connection": connection,
-                    "Configured model": model,
+                    "Provider": registry[name]["label"],
+                    "Status": info.get("status", HEALTH_NOT_CHECKED),
+                    "Configured": (
+                        "Yes" if info.get("configured", model_info.get("configured", False)) else "No"
+                    ),
+                    "Configured model": (
+                        info.get("model") or model_info.get("model") or registry[name]["model"]
+                    ),
                     "Response time": (
                         f"{latency:.0f} ms" if isinstance(latency, (int, float)) else "-"
                     ),
@@ -144,7 +153,7 @@ def ai_provider_status() -> None:
             pd.DataFrame(rows),
             hide_index=True,
             width="stretch",
-            alt="AI provider connection status and response times",
+            alt="AI provider status, health and response times",
         )
 
 

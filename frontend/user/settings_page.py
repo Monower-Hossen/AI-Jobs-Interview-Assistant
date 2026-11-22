@@ -87,7 +87,9 @@ def _preferences() -> None:
                     else 0
                 ),
             )
-            providers_list = ["auto", "gemini", "groq", "ollama"]
+            from services.llm_service import get_provider_registry
+
+            providers_list = ["auto", *get_provider_registry()]
             provider = st.selectbox(
                 "Preferred provider",
                 providers_list,
@@ -162,12 +164,14 @@ def _provider_settings() -> None:
     )
     ai_provider_status()
 
-    providers = ["gemini", "groq", "ollama"]
+    from services.llm_service import get_provider_registry
+
+    providers = list(get_provider_registry())
     modes = ["auto", "manual"]
     current_mode = settings.ai_provider_mode if settings.ai_provider_mode in modes else "auto"
     current_primary = settings.ai_primary_provider or settings.llm_provider
     if current_primary == "auto" or current_primary not in providers:
-        current_primary = "gemini"
+        current_primary = providers[0]
 
     with st.form("provider_settings_form", border=False):
         mode = st.segmented_control("Provider mode", modes, default=current_mode) or "auto"
@@ -200,11 +204,11 @@ def _provider_settings() -> None:
         st.markdown("**Cloud providers**")
         col1, col2 = st.columns(2)
         with col1:
-            gemini_key = st.text_input("Gemini API key", type="password", key="settings_gemini_key")
             groq_key = st.text_input("Groq API key", type="password", key="settings_groq_key")
+            gemini_key = st.text_input("Gemini API key", type="password", key="settings_gemini_key")
         with col2:
-            gemini_model = st.text_input("Gemini model", value=settings.gemini_model)
             groq_model = st.text_input("Groq model", value=settings.groq_model)
+            gemini_model = st.text_input("Gemini model", value=settings.gemini_model)
 
         st.markdown("**Local provider**")
         enable_ollama = st.toggle("Enable Ollama", value=settings.enable_ollama)
@@ -225,6 +229,7 @@ def _provider_settings() -> None:
                 "AI_MAX_RETRIES": str(retries),
                 "LLM_PROVIDER": primary,
                 "PROVIDER_PRIORITY": priority,
+                "AI_PROVIDER_PRIORITY": priority,
                 "GEMINI_API_KEY": gemini_key,
                 "GEMINI_MODEL": gemini_model,
                 "GROQ_API_KEY": groq_key,
@@ -247,15 +252,18 @@ def _provider_settings() -> None:
         with st.spinner("Checking providers…"):
             health = check_provider_health()
         for name, info in health.items():
+            message = f"{name.title()}: {info.get('status', 'Not checked')}"
+            if info.get("model"):
+                message += f" · {info['model']}"
+            latency = info.get("latency_ms")
+            if isinstance(latency, (int, float)):
+                message += f" · {latency:.0f} ms"
+            if info.get("error"):
+                message += f" · {info['error']}"
             if info.get("healthy"):
-                latency = info.get("latency_ms")
-                suffix = f" · {latency:.0f} ms" if isinstance(latency, (int, float)) else ""
-                st.success(
-                    f"{name}: healthy · {info.get('model')}{suffix}",
-                    icon=":material/check_circle:",
-                )
+                st.success(message, icon=":material/check_circle:")
             else:
-                st.warning(f"{name}: {info.get('error')}", icon=":material/warning:")
+                st.warning(message, icon=":material/warning:")
 
 
 def _speech_settings() -> None:
@@ -366,5 +374,5 @@ def _about() -> None:
         - Isolated accounts with role-based administration
 
         Built with Streamlit, SQLAlchemy, FAISS, Sentence Transformers, Plotly and
-        Groq/Gemini/Mistral/Ollama providers.
+        Groq/Gemini/Ollama providers.
         """)
