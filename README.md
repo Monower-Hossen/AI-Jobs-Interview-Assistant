@@ -48,84 +48,63 @@ The application analyzes resumes, matches them against job descriptions, generat
 
 ### 📊 Dashboard & Progress Tracking
 - Resume score, job match score, latest interview score
-- Interview history with score trends
-- Skill gap visualization
+- Interview history with score trends derived from persisted sessions
+- Category-level performance and focus areas
 - Progress charts over time
+
+### 🔐 Accounts & Workspaces
+- Sign-up, email login, role-based admin, and rate-limited authentication
+- Stable workspace tokens with owner-scoped queries for all saved data
+- Per-user preferences persisted in the database
+
+### 📚 Knowledge Base (RAG)
+- Per-workspace document upload, chunking, embeddings, and FAISS indexing
+- Cited, grounded answers and question generation from your documents
+- Atomic index persistence with embedding-model invalidation
+
+### 📄 Report Export
+- Download interview reports as JSON or PDF
+- PDF files are generated with ReportLab and persisted per workspace
 
 ## Architecture
 
 ```
 ai-interview-assistant/
-├── app.py                      # Main Streamlit application entry point
-├── requirements.txt            # Python dependencies
-├── requirements-dev.txt        # Development dependencies
-├── .env.example               # Environment variables template
-├── .gitignore                 # Git ignore rules
-├── README.md                  # This file
-│
-├── config/
-│   ├── __init__.py            # Config exports
-│   └── settings.py            # Configuration management
-│
-├── database/
-│   ├── __init__.py            # Database exports
-│   ├── db.py                  # SQLAlchemy setup
-│   └── models.py              # SQLAlchemy models
-│
-├── rag/
-│   ├── __init__.py            # RAG exports
-│   ├── document_loader.py     # PDF/DOCX/TXT loading
-│   ├── text_splitter.py       # Text chunking
-│   ├── embeddings.py          # Sentence Transformers embeddings
-│   ├── vector_store.py        # FAISS vector storage
-│   └── retriever.py           # Document retrieval
-│
-├── services/
-│   ├── __init__.py            # Services exports
-│   ├── llm_service.py         # LLM abstraction (Groq/Gemini/Mistral)
-│   ├── resume_analyzer.py     # Resume analysis & scoring
-│   ├── job_analyzer.py        # Job description analysis
-│   ├── job_matcher.py         # Resume-Job matching
-│   ├── interview_generator.py # Question generation
-│   ├── answer_evaluator.py    # Answer evaluation
-│   ├── report_generator.py    # Report generation
-│   └── speech_to_text.py      # Whisper transcription
-│
-├── ui/
-│   ├── __init__.py            # UI exports
-│   ├── dashboard.py           # Dashboard page
-│   ├── resume_page.py         # Resume analyzer page
-│   ├── job_page.py            # Job matcher page
-│   ├── interview_page.py      # Mock interview page
-│   ├── report_page.py         # Reports page
-│   └── settings_page.py       # Settings page
-│
-├── utils/
-│   ├── __init__.py            # Utils exports
-│   ├── file_utils.py          # File handling utilities
-│   └── helpers.py             # Helper functions
-│
-├── data/                      # Data directory (gitignored)
-│   ├── uploads/               # Uploaded files
-│   └── vector_store/          # FAISS index
-│
-└── tests/
-    ├── conftest.py            # Pytest fixtures
-    └── test_core.py           # Unit tests
+├── app.py                       # Streamlit entry point and navigation registry
+├── backend/
+│   ├── config/settings.py       # Environment-driven settings
+│   ├── database/                # SQLAlchemy engine, models, additive migrations
+│   ├── rag/                     # Loaders, splitters, embeddings, FAISS, retrieval
+│   ├── services/                # Auth, LLM, RAG, analysis, reports, roadmap services
+│   └── utils/                   # File validation and text helpers
+├── frontend/
+│   ├── shared/                  # Auth UI, components, password change, legacy navigation
+│   ├── admin/                   # Admin-only pages
+│   └── user/                    # Live user pages plus legacy wrappers/modules
+├── docs/                        # Provider and fallback documentation
+├── reports/                     # Phase audit and verification reports
+├── tests/                       # Core, dashboard, and user-management tests
+├── data/                        # Gitignored database, uploads, vectors, cache
+├── .streamlit/                  # Theme and server configuration
+├── pyproject.toml               # Tooling and canonical optional dev dependencies
+├── requirements.txt             # Runtime dependency list
+├── .env.example                 # Secrets-free environment variable template
+└── README.md                    # This file
 ```
 
 ## Tech Stack
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **LLM** | Groq (Llama 3.1) / Gemini / Mistral | Primary/Alternative LLM providers (free tiers) |
+| **LLM** | Groq / Gemini / Ollama / Mistral | Centralized provider manager with automatic fallback |
 | **Embeddings** | Sentence Transformers (all-MiniLM-L6-v2) | Local text embeddings |
 | **Vector DB** | FAISS | Local vector similarity search |
 | **Speech-to-Text** | Faster-Whisper | Local audio transcription |
 | **Frontend** | Streamlit | Web UI framework |
 | **Database** | SQLite + SQLAlchemy | Local data persistence |
 | **Document Processing** | PyPDF, python-docx | PDF/DOCX text extraction |
-| **LLM Orchestration** | LangChain Core | Prompts, structured output |
+| **Text Splitting** | LangChain Text Splitters | Document chunking |
+| **Validation** | Pydantic | Structured output validation |
 | **Testing** | pytest | Unit testing |
 | **Code Quality** | Ruff, Black, mypy | Linting, formatting, type checking |
 
@@ -136,7 +115,7 @@ See the Architecture section above for the complete directory structure.
 ## Installation
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Git
 - (Optional) FFmpeg for audio processing
 
@@ -191,9 +170,8 @@ streamlit run app.py
 
 ## Python Version
 
-- **Recommended:** Python 3.10 or 3.11
-- **Minimum:** Python 3.10
-- **Tested:** Python 3.10, 3.11, 3.12
+- **Declared minimum:** Python 3.11 (matches Ruff, mypy, and Black targets)
+- **Verified here:** Python 3.11.2 only
 
 ## Virtual Environment
 
@@ -215,60 +193,44 @@ deactivate
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env` and configure. See `docs/AI_PROVIDER_SETUP.md` and
+`docs/AI_FALLBACK_ARCHITECTURE.md` for provider routing details.
+
+Use `.env.example` as the complete, secrets-free variable contract. The most important groups are:
 
 ```bash
-# Required - Choose provider mode
-LLM_PROVIDER=auto                    # auto, groq, gemini, or mistral
-PROVIDER_PRIORITY=groq,gemini,mistral  # Order for auto mode
+# Provider routing
+AI_PROVIDER_MODE=auto
+AI_PRIMARY_PROVIDER=groq
+AI_FALLBACK_ENABLED=true
+LLM_PROVIDER=auto
+PROVIDER_PRIORITY=groq,gemini,ollama,mistral
+LLM_MIN_REQUEST_INTERVAL=0
+AI_REQUEST_TIMEOUT=60
+AI_MAX_RETRIES=2
 
-# Groq API (Primary - generous free tier)
-# Get from: https://console.groq.com/keys
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=groq/compound
-GROQ_BASE_URL=https://api.groq.com/openai/v1
-
-# Gemini API (Alternative - generous free tier)
-# Get from: https://aistudio.google.com/apikey
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-1.5-flash
+# Provider models and fallbacks
+GROQ_MODEL=openai/gpt-oss-20b
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_VERSION=v1beta
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-
-# Mistral API (Alternative - Free tier available)
-# Get from: https://console.mistral.ai/
-MISTRAL_API_KEY=your_mistral_api_key_here
+GEMINI_FALLBACK_MODELS=gemini-2.5-flash
 MISTRAL_MODEL=mistral-small-latest
 MISTRAL_BASE_URL=https://api.mistral.ai/v1
+ENABLE_OLLAMA=false
 
-# Embeddings (local, no API key needed)
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-EMBEDDING_DEVICE=cpu
-
-# Whisper (local speech-to-text)
-WHISPER_MODEL=base                    # tiny, base, small, medium, large
-WHISPER_DEVICE=cpu                    # cpu or cuda
-
-# Vector Database
-VECTOR_STORE_TYPE=faiss               # FAISS vector store
-VECTOR_STORE_PATH=./data/vector_store
-
-# Database
+# Storage and analysis limits
 DATABASE_PATH=./data/interview_assistant.db
-
-# RAG Settings
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-TOP_K_RETRIEVAL=5
-
-# API Settings
-REQUEST_TIMEOUT=60
-MAX_RETRIES=3
-RETRY_BACKOFF_FACTOR=1.5
-
-# Streamlit
-STREAMLIT_PORT=8501
-STREAMLIT_THEME=light
+VECTOR_STORE_PATH=./data/vector_store
+MAX_RESUME_CHARS=8000
+MAX_JD_CHARS=6000
+MAX_RAG_CHUNKS=5
+MAX_CONTEXT_CHARS=6000
 ```
+
+Relative storage paths are resolved against the project root, so startup does not depend on the
+current working directory. Gemini model availability depends on the configured API key and endpoint;
+`gemini-2.5-flash` is the default example and can be overridden with `GEMINI_MODEL`.
 
 ### Groq API Setup
 1. Go to https://console.groq.com/keys
@@ -290,6 +252,13 @@ STREAMLIT_THEME=light
 
 ## Running the Application
 
+Use the project virtual environment interpreter so Streamlit and project dependencies (including `streamlit-webrtc`) come from the same environment.
+
+```powershell
+# Recommended (Windows, from project root)
+.env\Scripts\python.exe -m streamlit run app.py
+```
+
 ```bash
 # Activate virtual environment
 .venv\Scripts\Activate.ps1  # Windows
@@ -301,6 +270,8 @@ streamlit run app.py
 # Or specify port
 streamlit run app.py --server.port 8501
 ```
+
+> **Note:** A global `streamlit` or `python` executable may point to a different interpreter (for example Anaconda), which can cause missing-package errors such as `streamlit-webrtc` being unavailable even when it is installed in the project venv.
 
 The app will open at `http://localhost:8501`
 
@@ -334,13 +305,13 @@ The app will open at `http://localhost:8501`
 pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=services --cov=rag --cov=utils --cov=database -v
+pytest tests/ --cov=backend.services --cov=backend.rag --cov=backend.utils --cov=backend.database -v
 
 # Run specific test file
 pytest tests/test_core.py -v
 
 # Run tests with coverage report
-pytest tests/ --cov=services --cov=rag --cov=utils --cov=database --cov-report=html
+pytest tests/ --cov=backend.services --cov=backend.rag --cov=backend.utils --cov=backend.database --cov-report=html
 ```
 
 ### Linting & Formatting
@@ -363,8 +334,9 @@ ruff check . && black --check . && mypy .
 ```
 
 ### Test Structure
-- `tests/conftest.py` - Pytest fixtures for isolation
-- `tests/test_core.py` - Core functionality tests (models, utilities, services)
+- `tests/test_core.py` - Models, utilities, services, RAG, provider fallback, and persistence
+- `tests/test_user_dashboard.py` - Page wiring, owner scope, dashboard, RAG, and preferences
+- `tests/test_user_management.py` - Admin workflows, login/logout, RBAC, and Phase 2 regressions
 
 ### Mocking
 Tests use mocked LLM responses to run without API keys.
@@ -409,14 +381,14 @@ pip install faster-whisper
 
 ## Future Improvements
 
-- [ ] Multi-user authentication
-- [ ] Export reports as PDF
+- [x] Multi-user authentication
+- [x] Export reports as PDF
 - [ ] Interview scheduling calendar
 - [ ] Company-specific question banks
 - [ ] Video interview simulation
 - [ ] Peer review sharing
 - [ ] Mobile-responsive UI
-- [ ] Offline mode with local LLM (Ollama)
+- [x] Offline mode with local LLM (Ollama)
 - [ ] Multi-language support
 - [ ] Integration with job boards (LinkedIn, Indeed)
 
@@ -438,7 +410,7 @@ MIT License - See LICENSE file for details.
 ## Final Year Project Presentation Points
 
 ### Technical Highlights
-1. **Multi-provider LLM Architecture** - Abstracted LLM service supporting Groq/Mistral with fallback
+1. **Multi-provider LLM Architecture** - Abstracted LLM service supporting Groq, Gemini, Ollama, and Mistral with fallback
 2. **RAG Pipeline** - Complete document processing, embedding, vector storage, and retrieval
 3. **Structured Output** - Pydantic models for all LLM responses with validation
 4. **Local Speech-to-Text** - Faster-Whisper integration (no paid APIs)
@@ -474,7 +446,7 @@ A: Documents → Load → Clean → Split (1000 chars, 200 overlap) → Embed (a
 A: FAISS is lighter, faster for CPU, no separate server needed, and sufficient for local document retrieval use case.
 
 **Q: How do you handle LLM rate limits?**
-A: Tenacity retry with exponential backoff (1.5x), max 3 retries, configurable timeout, and provider fallback (Groq → Mistral).
+A: Bounded exponential backoff, configurable timeout/retries, rate-limit cooldowns, circuit breakers, and automatic fallback (Groq → Gemini → Ollama → Mistral).
 
 **Q: How is answer evaluation structured?**
 A: 5-dimension rubric (Technical Accuracy, Relevance, Communication, Confidence, Completeness) each 0-10, with qualitative feedback and suggested improvements.
@@ -492,7 +464,7 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 
 **AI Interview Assistant** | Final Year Project | Python, Streamlit, LLMs, RAG, FAISS, Whisper
 
-- Built a full-stack AI-powered interview preparation platform using Groq/Mistral LLMs, local embeddings (Sentence Transformers), FAISS vector database, and Faster-Whisper for speech-to-text
+- Built a full-stack AI-powered interview preparation platform using Groq, Gemini, Ollama, and Mistral LLMs, local embeddings (Sentence Transformers), FAISS vector database, and Faster-Whisper for speech-to-text
 - Implemented modular RAG pipeline: document loading (PDF/DOCX), text splitting, embedding generation, vector storage, and contextual retrieval
 - Designed multi-provider LLM abstraction with automatic fallback, structured output validation (Pydantic), and retry logic with exponential backoff
 - Developed 7-category personalized interview question generator with dynamic follow-up based on candidate responses
@@ -513,6 +485,8 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 - 📊 Detailed evaluation & improvement plans
 - 📈 Progress tracking dashboard
 
-**Tech Stack:** Python, Streamlit, Groq/Mistral LLMs, Sentence Transformers, FAISS, Faster-Whisper, SQLite, LangChain Core
+**Tech Stack:** Python, Streamlit, Groq/Gemini/Ollama/Mistral LLMs, Sentence Transformers, FAISS, Faster-Whisper, SQLite, Pydantic
 
-**Free & Open Source:** Runs entirely on free APIs and local models - no paid services required.
+**Free & Open Source:** Runs entirely on free APIs and local models - no paid services required.#   A I - J o b - I n t e r v i e w - A s s i s t a n t 
+ 
+ 
