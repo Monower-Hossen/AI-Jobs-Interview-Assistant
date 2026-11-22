@@ -87,7 +87,7 @@ def _preferences() -> None:
                     else 0
                 ),
             )
-            providers_list = ["auto", "groq", "gemini", "mistral", "ollama"]
+            providers_list = ["auto", "gemini", "groq", "ollama"]
             provider = st.selectbox(
                 "Preferred provider",
                 providers_list,
@@ -162,12 +162,12 @@ def _provider_settings() -> None:
     )
     ai_provider_status()
 
-    providers = ["groq", "gemini", "mistral", "ollama"]
+    providers = ["gemini", "groq", "ollama"]
     modes = ["auto", "manual"]
     current_mode = settings.ai_provider_mode if settings.ai_provider_mode in modes else "auto"
     current_primary = settings.ai_primary_provider or settings.llm_provider
     if current_primary == "auto" or current_primary not in providers:
-        current_primary = "groq"
+        current_primary = "gemini"
 
     with st.form("provider_settings_form", border=False):
         mode = st.segmented_control("Provider mode", modes, default=current_mode) or "auto"
@@ -200,15 +200,11 @@ def _provider_settings() -> None:
         st.markdown("**Cloud providers**")
         col1, col2 = st.columns(2)
         with col1:
-            groq_key = st.text_input("Groq API key", type="password", key="settings_groq_key")
-            mistral_key = st.text_input(
-                "Mistral API key", type="password", key="settings_mistral_key"
-            )
             gemini_key = st.text_input("Gemini API key", type="password", key="settings_gemini_key")
+            groq_key = st.text_input("Groq API key", type="password", key="settings_groq_key")
         with col2:
-            groq_model = st.text_input("Groq model", value=settings.groq_model)
-            mistral_model = st.text_input("Mistral model", value=settings.mistral_model)
             gemini_model = st.text_input("Gemini model", value=settings.gemini_model)
+            groq_model = st.text_input("Groq model", value=settings.groq_model)
 
         st.markdown("**Local provider**")
         enable_ollama = st.toggle("Enable Ollama", value=settings.enable_ollama)
@@ -229,12 +225,10 @@ def _provider_settings() -> None:
                 "AI_MAX_RETRIES": str(retries),
                 "LLM_PROVIDER": primary,
                 "PROVIDER_PRIORITY": priority,
-                "GROQ_API_KEY": groq_key,
-                "GROQ_MODEL": groq_model,
-                "MISTRAL_API_KEY": mistral_key,
-                "MISTRAL_MODEL": mistral_model,
                 "GEMINI_API_KEY": gemini_key,
                 "GEMINI_MODEL": gemini_model,
+                "GROQ_API_KEY": groq_key,
+                "GROQ_MODEL": groq_model,
                 "ENABLE_OLLAMA": str(enable_ollama).lower(),
                 "OLLAMA_BASE_URL": ollama_url,
                 "OLLAMA_MODEL": ollama_model,

@@ -36,12 +36,11 @@ def ai_provider_status() -> None:
     def _time(value: float | None) -> str:
         return time.strftime("%H:%M:%S", time.localtime(value)) if value else "-"
 
-    names = ["groq", "gemini", "ollama", "mistral"]
+    names = ["gemini", "groq", "ollama"]
     models = {
-        "groq": settings.groq_model,
         "gemini": settings.gemini_model,
+        "groq": settings.groq_model,
         "ollama": settings.ollama_model,
-        "mistral": settings.mistral_model,
     }
     health_key = "_ai_provider_health_results"
     success_key = "_ai_provider_last_success"

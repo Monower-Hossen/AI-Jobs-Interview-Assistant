@@ -27,17 +27,16 @@ def show_admin_settings() -> None:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(f"**Groq Model:** {settings.groq_model or 'Not set'}")
-            st.markdown(
-                f"**Groq API Key:** {'Configured' if settings.groq_api_key else 'Not configured'}"
-            )
-        with col2:
             st.markdown(f"**Gemini Model:** {settings.gemini_model or 'Not set'}")
             st.markdown(
                 f"**Gemini API Key:** {'Configured' if settings.gemini_api_key else 'Not configured'}"
             )
+        with col2:
+            st.markdown(f"**Groq Model:** {settings.groq_model or 'Not set'}")
+            st.markdown(
+                f"**Groq API Key:** {'Configured' if settings.groq_api_key else 'Not configured'}"
+            )
 
-        st.markdown(f"**Mistral Model:** {settings.mistral_model or 'Not set'}")
         st.markdown(f"**Ollama Enabled:** {'Yes' if settings.enable_ollama else 'No'}")
 
     with st.expander("Database & Storage", expanded=False):

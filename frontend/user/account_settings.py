@@ -13,7 +13,7 @@ from frontend.shared.components import (
 
 DIFFICULTIES = ("easy", "medium", "hard")
 INTERVIEW_TYPES = ("Full Interview", "Technical", "Behavioral", "HR", "Mixed")
-PROVIDERS = ("auto", "groq", "gemini", "mistral", "ollama")
+PROVIDERS = ("auto", "gemini", "groq", "ollama")
 LEARNING_FORMATS = ("mixed", "articles", "videos", "practice")
 NOTIFICATION_LABELS = {
     "interview_reminders": "Interview reminders",

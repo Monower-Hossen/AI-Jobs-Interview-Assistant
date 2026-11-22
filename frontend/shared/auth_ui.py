@@ -92,7 +92,6 @@ TRANSIENT_KEYS: tuple[str, ...] = (
     "resume_text",
     "settings_gemini_key",
     "settings_groq_key",
-    "settings_mistral_key",
     "show_evaluation",
     "shown_empty_warning",
     "sign_in_email",
@@ -154,7 +153,6 @@ _CREDENTIAL_KEYS: tuple[str, ...] = (
     "profile_new_password",
     "settings_gemini_key",
     "settings_groq_key",
-    "settings_mistral_key",
     "sign_in_password",
 )
 
