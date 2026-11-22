@@ -311,14 +311,23 @@ def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
 
 
 def _max_attempts() -> int:
-    configured = getattr(settings, "ai_max_retries", 0) or getattr(settings, "max_retries", 3)
-    return max(1, int(configured) + 1)
+    configured = getattr(settings, "ai_max_retries", None)
+    if configured is None:
+        configured = getattr(settings, "max_retries", 2)
+    try:
+        return max(1, int(configured or 0) + 1)
+    except (TypeError, ValueError):
+        return 3
 
 
 def _request_timeout() -> float:
-    return float(
-        getattr(settings, "ai_request_timeout", 0) or getattr(settings, "request_timeout", 60)
-    )
+    configured = getattr(settings, "ai_request_timeout", None)
+    if configured is None:
+        configured = getattr(settings, "request_timeout", 60)
+    try:
+        return min(300.0, max(5.0, float(configured or 60)))
+    except (TypeError, ValueError):
+        return 60.0
 
 
 class LLMProvider(ABC):
@@ -845,15 +854,19 @@ class ProviderManager:
             or settings.llm_provider
             or "auto"
         )
-        mode = (settings.ai_provider_mode or "auto").strip().lower()
+        mode = str(getattr(settings, "ai_provider_mode", "auto") or "auto").strip().lower()
+        if mode not in {"auto", "manual", "strict", "fixed", "single"}:
+            mode = "auto"
         manual_mode = mode in {"manual", "strict", "fixed", "single"}
-        fallback = bool(settings.ai_fallback_enabled) and not manual_mode
-        requested = requested.strip().lower()
+        fallback = bool(getattr(settings, "ai_fallback_enabled", True)) and not manual_mode
+        requested = str(requested).strip().lower()
         priority: list[str] = []
-        for item in (settings.provider_priority or DEFAULT_PROVIDER_PRIORITY).split(","):
+        for item in str(getattr(settings, "provider_priority", DEFAULT_PROVIDER_PRIORITY) or DEFAULT_PROVIDER_PRIORITY).split(","):
             name = item.strip().lower()
             if name and name not in priority:
                 priority.append(name)
+        if not priority:
+            priority = list(SUPPORTED_PROVIDERS)
         return requested, mode, fallback, priority
 
     def _build_chain(self) -> list[LLMProvider]:
@@ -894,6 +907,16 @@ class ProviderManager:
             raise ValueError(
                 f"No LLM providers configured. Set API keys and models for: {available}"
             )
+        logger.info(
+            "provider.chain_ready",
+            extra={
+                "event": "provider.chain_ready",
+                "requested": requested,
+                "mode": mode,
+                "fallback_enabled": fallback,
+                "chain": [p.get_provider_name() for p in providers],
+            },
+        )
         return providers
 
     @staticmethod
@@ -977,7 +1000,7 @@ class ProviderManager:
         for provider in self._candidates():
             key = self._provider_key(provider)
             name, model = key
-            logger.debug(
+            logger.info(
                 "provider.request",
                 extra={"event": "provider.request", "provider": name, "model": model},
             )
@@ -993,16 +1016,27 @@ class ProviderManager:
                         "event": "provider.failure",
                         "provider": name,
                         "model": model,
+                        "error_type": type(exc).__name__,
                         "error": _error_message(exc),
                     },
                 )
                 continue
-            if not response.content or not response.content.strip():
-                last_exc = ValueError("Empty response from " + name)
+            if not isinstance(response, LLMResponse) or not response.content or not str(response.content).strip():
+                last_exc = ValueError(f"Empty/invalid response from {name}")
                 self._record_failure(key, last_exc)
-                errors.append(f"{name}: empty response")
+                errors.append(f"{name}: empty/invalid response")
+                logger.warning(
+                    "provider.invalid_response",
+                    extra={"event": "provider.invalid_response", "provider": name, "model": model},
+                )
                 continue
             self._record_success(key, response.latency_ms)
+            fallback_triggered = bool(self.providers) and name != self.providers[0].get_provider_name()
+            if fallback_triggered:
+                logger.info(
+                    "provider.fallback_used",
+                    extra={"event": "provider.fallback_used", "provider": name, "model": model},
+                )
             self._last_used_provider = name
             self._last_used_model = model
             return response
@@ -1017,9 +1051,14 @@ class ProviderManager:
         for provider in self._candidates():
             key = self._provider_key(provider)
             name, model = key
-            logger.debug(
+            logger.info(
                 "provider.request",
-                extra={"event": "provider.request", "provider": name, "model": model},
+                extra={
+                    "event": "provider.request",
+                    "provider": name,
+                    "model": model,
+                    "structured": True,
+                },
             )
             try:
                 result = provider.generate_structured(prompt, response_model, **kwargs)
@@ -1033,11 +1072,24 @@ class ProviderManager:
                         "event": "provider.failure",
                         "provider": name,
                         "model": model,
+                        "structured": True,
+                        "error_type": type(exc).__name__,
                         "error": _error_message(exc),
                     },
                 )
                 continue
+            if result is None:
+                last_exc = ValueError(f"Empty structured response from {name}")
+                self._record_failure(key, last_exc)
+                errors.append(f"{name}: empty structured response")
+                continue
             self._record_success(key, 0.0)
+            fallback_triggered = bool(self.providers) and name != self.providers[0].get_provider_name()
+            if fallback_triggered:
+                logger.info(
+                    "provider.fallback_used",
+                    extra={"event": "provider.fallback_used", "provider": name, "model": model, "structured": True},
+                )
             self._last_used_provider = name
             self._last_used_model = model
             return result

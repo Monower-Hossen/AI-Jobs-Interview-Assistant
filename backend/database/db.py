@@ -25,7 +25,10 @@ def _detach_all(db: Session) -> None:
     try:
         db.flush()
     except Exception:
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     instances = list(db.identity_map.values())
     if len(instances) <= _MAX_DETACH_REFRESH:
@@ -35,7 +38,10 @@ def _detach_all(db: Session) -> None:
             except Exception:
                 pass
 
-    db.expunge_all()
+    try:
+        db.expunge_all()
+    except Exception:
+        pass
 
 
 _ADD_COLUMNS: dict[str, dict[str, str]] = {
@@ -232,11 +238,16 @@ def get_db_context() -> Generator[Session, None, None]:
         yield db
         db.commit()
     except Exception:
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        _detach_all(db)
-        db.close()
+        try:
+            _detach_all(db)
+        finally:
+            db.close()
 
 
 @contextmanager
@@ -250,11 +261,16 @@ def get_readonly_db() -> Generator[Session, None, None]:
     try:
         yield db
     except Exception:
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        _detach_all(db)
-        db.close()
+        try:
+            _detach_all(db)
+        finally:
+            db.close()
 
 
 def create_session() -> Session:
@@ -264,6 +280,17 @@ def create_session() -> Session:
 
     assert SessionLocal is not None
     return SessionLocal()
+
+
+@contextmanager
+def session_scope(*, readonly: bool = False) -> Generator[Session, None, None]:
+    """Explicit transaction boundary helper for service-layer operations."""
+    if readonly:
+        with get_readonly_db() as db:
+            yield db
+    else:
+        with get_db_context() as db:
+            yield db
 
 
 def close_database() -> None:

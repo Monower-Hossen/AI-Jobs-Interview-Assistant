@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
+import time
 import uuid
 import wave
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from config.settings import settings
 from database.db import get_db_context
@@ -21,12 +25,22 @@ from database.models import (
     UserSession,
 )
 from services.auth_service import log_event, require_admin, require_owned_session_token
+from services.live_recording_manifest import (
+    CAPTURE_MANIFEST_KEY,
+    extract_capture_manifest,
+    merge_manifest_metadata,
+    safe_load_capture_manifest,
+)
 from services.resource_monitor import acquire_heavy_task
 
 AUDIO_MIME = "audio/wav"
 VIDEO_MIME = "video/mp4"
 _MEDIA_SUFFIXES = {"audio": ".wav", "video": ".mp4"}
 _ACTIVE_DELETION = "active"
+_PENDING_DELETION = "pending_delete"
+_DELETED_DELETION = "deleted"
+_DELETION_STATUSES = {_ACTIVE_DELETION, _PENDING_DELETION, _DELETED_DELETION}
+_TEMP_FILE_MIN_AGE_SECONDS = 300
 
 
 class LiveMediaError(ValueError):
@@ -60,14 +74,20 @@ def storage_root() -> Path:
 
 
 def _storage_key(
-    *, user_id: int, interview_id: int, recording_id: int, media_type: str
+    *,
+    user_id: int,
+    interview_id: int,
+    recording_id: int,
+    media_type: str,
+    unique: bool = False,
 ) -> str:
     suffix = _MEDIA_SUFFIXES.get(media_type)
     if suffix is None:
         raise LiveMediaError("Unsupported live media type.")
+    token = f"_{uuid.uuid4().hex}" if unique else ""
     return (
         f"{int(user_id)}/{int(interview_id)}/{int(recording_id)}/"
-        f"{media_type}/recording{suffix}"
+        f"{media_type}/recording{token}{suffix}"
     )
 
 
@@ -103,15 +123,31 @@ def _validate_media(data: bytes, media_type: str, duration_seconds: float) -> tu
                     raise LiveMediaError("The audio recording is invalid.")
         except (EOFError, wave.Error) as exc:
             raise LiveMediaError("The audio recording is not a valid WAV file.") from exc
-        return AUDIO_MIME, hashlib.sha256(data).hexdigest()
+        return AUDIO_MIME, _sha256_bytes(data)
     if len(data) < 12 or data[4:8] != b"ftyp":
         raise LiveMediaError("The camera recording is not a valid MP4 file.")
-    return VIDEO_MIME, hashlib.sha256(data).hexdigest()
+    return VIDEO_MIME, _sha256_bytes(data)
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _temp_write_path(path: Path) -> Path:
+    return path.with_name(f".tmp_live_media_{uuid.uuid4().hex}.part")
+
+
+def _atomic_write(path: Path, data: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
+    temporary = _temp_write_path(path)
     try:
         with temporary.open("wb") as handle:
             handle.write(data)
@@ -122,9 +158,19 @@ def _atomic_write(path: Path, data: bytes) -> None:
         except OSError:
             pass
         os.replace(temporary, path)
+        return path
     except OSError as exc:
         temporary.unlink(missing_ok=True)
         raise LiveMediaError("Could not save the recording to local storage.") from exc
+
+
+def _safe_unlink(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        logger.warning("live_media.unlink_failed", extra={"event": "live_media.unlink_failed"})
+        return False
 
 
 def _verify_interview_access(db: Any, interview_id: int, actor_user_id: int, session_token: str) -> None:
@@ -143,6 +189,16 @@ def _verify_interview_access(db: Any, interview_id: int, actor_user_id: int, ses
         raise LiveMediaError("This interview does not belong to your workspace.")
 
 
+def _is_media_active(record: LiveInterviewMedia | None) -> bool:
+    return bool(record is not None and str(getattr(record, "deletion_status", "")) == _ACTIVE_DELETION)
+
+
+def _is_recording_active(record: LiveInterviewRecording | None) -> bool:
+    return bool(
+        record is not None and str(getattr(record, "deletion_status", "")) == _ACTIVE_DELETION
+    )
+
+
 def _verify_recording_access(
     db: Any, recording_id: int, actor_user_id: int, session_token: str
 ) -> LiveInterviewRecording:
@@ -152,11 +208,10 @@ def _verify_recording_access(
         .filter(
             LiveInterviewRecording.id == int(recording_id),
             LiveInterviewRecording.owner_user_id == int(actor_user_id),
-            LiveInterviewRecording.deletion_status == _ACTIVE_DELETION,
         )
         .first()
     )
-    if record is None:
+    if not _is_recording_active(record):
         raise LiveMediaError("This recording is not available.")
     return record
 
@@ -247,79 +302,116 @@ def save_live_media(
     metadata: dict[str, Any] | None = None,
 ) -> int:
     mime_type, checksum = _validate_media(data, media_type, float(duration_seconds))
-    with get_db_context() as db:
-        record = _verify_recording_access(db, recording_id, user_id, session_token)
-        if not record.consent_given:
-            raise LiveMediaError("Recording consent is required before saving media.")
-        if int(record.interview_session_id) != int(interview_id):
-            raise LiveMediaError("This recording does not belong to the interview.")
-        key = _storage_key(
-            user_id=int(user_id),
-            interview_id=int(interview_id),
-            recording_id=int(recording_id),
-            media_type=media_type,
-        )
-        path = resolve_storage_key(key)
-        existing = (
-            db.query(LiveInterviewMedia)
-            .filter(
-                LiveInterviewMedia.recording_id == int(recording_id),
-                LiveInterviewMedia.media_type == media_type,
-            )
-            .first()
-        )
-        if (
-            existing is not None
-            and existing.checksum == checksum
-            and existing.deletion_status == _ACTIVE_DELETION
-            and path.exists()
-        ):
-            return int(existing.id)
-        with acquire_heavy_task("video_processing"):
-            _atomic_write(path, data)
-        payload = dict(metadata or {})
-        payload.setdefault("consent_policy_version", record.consent_policy_version)
-        payload.setdefault("captured_at", _now().isoformat())
-        if existing is None:
-            media = LiveInterviewMedia(
+    old_path: Path | None = None
+    new_path: Path | None = None
+    committed = False
+    try:
+        with get_db_context() as db:
+            record = _verify_recording_access(db, recording_id, user_id, session_token)
+            if not record.consent_given:
+                raise LiveMediaError("Recording consent is required before saving media.")
+            if int(record.interview_session_id) != int(interview_id):
+                raise LiveMediaError("This recording does not belong to the interview.")
+
+            key = _storage_key(
+                user_id=int(user_id),
+                interview_id=int(interview_id),
                 recording_id=int(recording_id),
-                interview_session_id=int(interview_id),
-                owner_user_id=int(user_id),
                 media_type=media_type,
-                storage_key=key,
-                filename=Path(key).name,
-                mime_type=mime_type,
-                size_bytes=len(data),
-                duration_seconds=float(duration_seconds),
-                checksum=checksum,
-                media_status="ready",
-                metadata_json=payload,
-                finalized_at=_now(),
+                unique=True,
             )
-            db.add(media)
-        else:
-            existing.storage_key = key
-            existing.filename = Path(key).name
-            existing.mime_type = mime_type
-            existing.size_bytes = len(data)
-            existing.duration_seconds = float(duration_seconds)
-            existing.checksum = checksum
-            existing.media_status = "ready"
-            existing.metadata_json = payload
-            existing.finalized_at = _now()
-            existing.deletion_status = _ACTIVE_DELETION
-            existing.deleted_at = None
-            media = existing
-        db.flush()
-        log_event(
-            "live_media_saved",
-            message=(
-                f"media_id={int(media.id)} interview_id={int(interview_id)} "
-                f"type={media_type} bytes={len(data)}"
-            ),
-            user_id=int(user_id),
-        )
-        return int(media.id)
+            new_path = resolve_storage_key(key)
+            existing = (
+                db.query(LiveInterviewMedia)
+                .filter(
+                    LiveInterviewMedia.recording_id == int(recording_id),
+                    LiveInterviewMedia.media_type == media_type,
+                )
+                .first()
+            )
+            if (
+                existing is not None
+                and str(existing.checksum or "") == checksum
+                and str(existing.deletion_status or "") == _ACTIVE_DELETION
+                and _safe_key(str(existing.storage_key or ""))
+                and resolve_storage_key(str(existing.storage_key)).exists()
+            ):
+                return int(existing.id)
+
+            existing_payload = dict(getattr(existing, "metadata_json", None) or {}) if existing is not None else {}
+            payload = merge_manifest_metadata({**existing_payload, **dict(metadata or {})}, None)
+            incoming_manifest = (metadata or {}).get(CAPTURE_MANIFEST_KEY)
+            if incoming_manifest is not None:
+                validated_manifest = safe_load_capture_manifest(incoming_manifest)
+                if validated_manifest is None:
+                    raise LiveMediaError("Capture manifest is invalid or unsupported.")
+                payload = merge_manifest_metadata(payload, validated_manifest)
+            payload.setdefault("consent_policy_version", record.consent_policy_version)
+            payload.setdefault("captured_at", _now().isoformat())
+
+            if existing is not None and _safe_key(str(existing.storage_key or "")):
+                prev = resolve_storage_key(str(existing.storage_key))
+                if prev.exists():
+                    old_path = prev
+
+            with acquire_heavy_task("video_processing"):
+                _atomic_write(new_path, data)
+
+            if existing is None:
+                media = LiveInterviewMedia(
+                    recording_id=int(recording_id),
+                    interview_session_id=int(interview_id),
+                    owner_user_id=int(user_id),
+                    media_type=media_type,
+                    storage_key=key,
+                    filename=Path(key).name,
+                    mime_type=mime_type,
+                    size_bytes=len(data),
+                    duration_seconds=float(duration_seconds),
+                    checksum=checksum,
+                    media_status="ready",
+                    metadata_json=payload,
+                    finalized_at=_now(),
+                    deletion_status=_ACTIVE_DELETION,
+                )
+                db.add(media)
+            else:
+                existing.storage_key = key
+                existing.filename = Path(key).name
+                existing.mime_type = mime_type
+                existing.size_bytes = len(data)
+                existing.duration_seconds = float(duration_seconds)
+                existing.checksum = checksum
+                existing.media_status = "ready"
+                existing.metadata_json = payload
+                existing.finalized_at = _now()
+                existing.deletion_status = _ACTIVE_DELETION
+                existing.deleted_at = None
+                media = existing
+            db.flush()
+            media_id = int(media.id)
+        committed = True
+    except Exception:
+        if not committed and new_path is not None:
+            _safe_unlink(new_path)
+        raise
+
+    if committed and old_path is not None and new_path is not None and old_path != new_path:
+        if not _safe_unlink(old_path):
+            logger.warning(
+                "live_media.old_file_cleanup_failed",
+                extra={"event": "live_media.old_file_cleanup_failed", "media_id": media_id},
+            )
+
+    log_event(
+        "live_media_saved",
+        message=(
+            f"media_id={int(media_id)} interview_id={int(interview_id)} "
+            f"type={media_type} bytes={len(data)}"
+        ),
+        user_id=int(user_id),
+    )
+    return int(media_id)
 
 
 def _recording_row(row: LiveInterviewRecording, media: list[LiveInterviewMedia]) -> dict[str, Any]:
@@ -345,10 +437,13 @@ def _recording_row(row: LiveInterviewRecording, media: list[LiveInterviewMedia])
                 "duration_seconds": float(item.duration_seconds or 0),
                 "checksum": item.checksum,
                 "media_status": item.media_status,
+                "deletion_status": item.deletion_status,
                 "metadata": item.metadata_json or {},
-                "available": resolve_storage_key(item.storage_key).exists()
-                if _safe_key(item.storage_key)
-                else False,
+                "available": (
+                    str(item.deletion_status) == _ACTIVE_DELETION
+                    and _safe_key(item.storage_key)
+                    and resolve_storage_key(item.storage_key).exists()
+                ),
             }
             for item in media
         ],
@@ -389,6 +484,9 @@ def list_user_recordings(*, user_id: int, session_token: str) -> list[dict[str, 
                 .all()
             )
             item = _recording_row(row, media)
+            manifests = [extract_capture_manifest(m.get("metadata")) for m in item.get("media", [])]
+            manifests = [m for m in manifests if m is not None]
+            item["capture_manifest"] = manifests[0] if manifests else None
             session = (
                 db.query(InterviewSession).filter(InterviewSession.id == row.interview_session_id).first()
             )
@@ -442,6 +540,9 @@ def list_admin_recordings(
                 .all()
             )
             item = _recording_row(row, media)
+            manifests = [extract_capture_manifest(m.get("metadata")) for m in item.get("media", [])]
+            manifests = [m for m in manifests if m is not None]
+            item["capture_manifest"] = manifests[0] if manifests else None
             owner = db.query(User).filter(User.id == row.owner_user_id).first()
             item["owner_email"] = getattr(owner, "email", "")
             item["owner_username"] = getattr(owner, "username", "")
@@ -462,10 +563,7 @@ def read_live_media(
     actor_admin_id: int | None = None,
 ) -> tuple[bytes, str, str]:
     with get_db_context() as db:
-        query = db.query(LiveInterviewMedia).filter(
-            LiveInterviewMedia.id == int(media_id),
-            LiveInterviewMedia.deletion_status == _ACTIVE_DELETION,
-        )
+        query = db.query(LiveInterviewMedia).filter(LiveInterviewMedia.id == int(media_id))
         if actor_admin_id is not None:
             require_admin(actor_admin_id)
         else:
@@ -474,7 +572,7 @@ def read_live_media(
             query = query.filter(LiveInterviewMedia.owner_user_id == int(actor_user_id))
             require_owned_session_token(session_token, actor_user_id)
         record = query.first()
-        if record is None:
+        if not _is_media_active(record):
             raise LiveMediaError("This recording is not available.")
         path = resolve_storage_key(record.storage_key)
         if not path.exists():
@@ -483,7 +581,7 @@ def read_live_media(
             data = path.read_bytes()
         except OSError as exc:
             raise LiveMediaError("The recording file could not be read.") from exc
-        if hashlib.sha256(data).hexdigest() != record.checksum:
+        if _sha256_bytes(data) != record.checksum:
             raise LiveMediaError("The recording failed its integrity check.")
         return data, record.mime_type, record.filename
 
@@ -496,10 +594,7 @@ def verify_live_media(
     actor_admin_id: int | None = None,
 ) -> dict[str, Any]:
     with get_db_context() as db:
-        query = db.query(LiveInterviewMedia).filter(
-            LiveInterviewMedia.id == int(media_id),
-            LiveInterviewMedia.deletion_status == _ACTIVE_DELETION,
-        )
+        query = db.query(LiveInterviewMedia).filter(LiveInterviewMedia.id == int(media_id))
         if actor_admin_id is not None:
             require_admin(actor_admin_id)
         else:
@@ -508,14 +603,14 @@ def verify_live_media(
             query = query.filter(LiveInterviewMedia.owner_user_id == int(actor_user_id))
             require_owned_session_token(session_token, actor_user_id)
         record = query.first()
-        if record is None:
+        if not _is_media_active(record):
             raise LiveMediaError("This recording is not available.")
         path = resolve_storage_key(record.storage_key)
         exists = path.exists()
         valid = False
         if exists:
             try:
-                valid = hashlib.sha256(path.read_bytes()).hexdigest() == record.checksum
+                valid = _sha256_file(path) == str(record.checksum)
             except OSError:
                 valid = False
         return {
@@ -524,34 +619,50 @@ def verify_live_media(
             "checksum_valid": valid,
             "size_bytes": int(record.size_bytes or 0),
             "media_type": record.media_type,
+            "deletion_status": str(record.deletion_status),
         }
 
 
-def _delete_media_rows(db: Any, recording_id: int) -> list[str]:
-    paths: list[str] = []
-    for item in (
-        db.query(LiveInterviewMedia)
-        .filter(
-            LiveInterviewMedia.recording_id == int(recording_id),
-            LiveInterviewMedia.deletion_status == _ACTIVE_DELETION,
-        )
-        .all()
-    ):
-        paths.append(item.storage_key)
-        item.deletion_status = "deleted"
+def _mark_media_pending_delete(item: LiveInterviewMedia) -> None:
+    if str(item.deletion_status) != _DELETED_DELETION:
+        item.deletion_status = _PENDING_DELETION
         item.deleted_at = _now()
-    return paths
 
 
-def _remove_paths(paths: list[str]) -> list[str]:
-    failures: list[str] = []
-    for key in paths:
-        try:
-            path = resolve_storage_key(key)
-            path.unlink(missing_ok=True)
-        except (LiveMediaError, OSError):
-            failures.append(key)
-    return failures
+def _mark_media_deleted(item: LiveInterviewMedia) -> None:
+    item.deletion_status = _DELETED_DELETION
+    item.deleted_at = item.deleted_at or _now()
+
+
+def _mark_recording_pending_delete(record: LiveInterviewRecording) -> None:
+    if str(record.deletion_status) != _DELETED_DELETION:
+        record.deletion_status = _PENDING_DELETION
+        record.deleted_at = _now()
+        if str(record.recording_status) not in {"deleted"}:
+            record.recording_status = "pending_delete"
+
+
+def _mark_recording_deleted(record: LiveInterviewRecording) -> None:
+    record.deletion_status = _DELETED_DELETION
+    record.deleted_at = record.deleted_at or _now()
+    record.recording_status = "deleted"
+
+
+def _remove_storage_key(storage_key: str) -> tuple[bool, str | None]:
+    try:
+        path = resolve_storage_key(storage_key)
+    except LiveMediaError:
+        logger.warning("live_media.invalid_storage_key", extra={"event": "live_media.invalid_storage_key"})
+        return False, "invalid_storage_key"
+    try:
+        if path.exists():
+            path.unlink()
+        return True, None
+    except FileNotFoundError:
+        return True, None
+    except OSError:
+        logger.warning("live_media.unlink_failed", extra={"event": "live_media.unlink_failed"})
+        return False, "unlink_failed"
 
 
 def delete_live_media(
@@ -560,12 +671,9 @@ def delete_live_media(
     actor_user_id: int | None = None,
     session_token: str | None = None,
     actor_admin_id: int | None = None,
-) -> None:
+) -> dict[str, Any]:
     with get_db_context() as db:
-        query = db.query(LiveInterviewMedia).filter(
-            LiveInterviewMedia.id == int(media_id),
-            LiveInterviewMedia.deletion_status == _ACTIVE_DELETION,
-        )
+        query = db.query(LiveInterviewMedia).filter(LiveInterviewMedia.id == int(media_id))
         if actor_admin_id is not None:
             require_admin(actor_admin_id)
         else:
@@ -576,19 +684,45 @@ def delete_live_media(
         record = query.first()
         if record is None:
             raise LiveMediaError("This recording is not available.")
-        key = record.storage_key
-        record.deletion_status = "deleted"
-        record.deleted_at = _now()
-    failures = _remove_paths([key])
-    if actor_admin_id is not None:
-        log_event(
-            "admin.media_delete",
-            f"Admin deleted live interview media {int(media_id)}",
-            actor_admin_id,
-            level="warning",
+        status = str(record.deletion_status or "")
+        if status == _DELETED_DELETION:
+            return {"id": int(media_id), "status": _DELETED_DELETION, "pending": False}
+        if status not in {_ACTIVE_DELETION, _PENDING_DELETION}:
+            raise LiveMediaError("This recording is not available.")
+        key = str(record.storage_key)
+        _mark_media_pending_delete(record)
+
+    removed, err = _remove_storage_key(key)
+    if removed:
+        with get_db_context() as db:
+            current = db.query(LiveInterviewMedia).filter(LiveInterviewMedia.id == int(media_id)).first()
+            if current is not None:
+                _mark_media_deleted(current)
+        if actor_admin_id is not None:
+            log_event(
+                "admin.media_delete",
+                f"Admin deleted live interview media {int(media_id)}",
+                actor_admin_id,
+                level="warning",
+            )
+        return {"id": int(media_id), "status": _DELETED_DELETION, "pending": False}
+
+    logger.warning(
+        "live_media.delete_pending",
+        extra={"event": "live_media.delete_pending", "media_id": int(media_id), "error": err},
+    )
+    raise LiveMediaError("The recording deletion is pending because a stored file could not be removed.")
+
+
+def _collect_pending_media_for_recording(db: Any, recording_id: int) -> list[LiveInterviewMedia]:
+    return (
+        db.query(LiveInterviewMedia)
+        .filter(
+            LiveInterviewMedia.recording_id == int(recording_id),
+            LiveInterviewMedia.deletion_status.in_([_ACTIVE_DELETION, _PENDING_DELETION]),
         )
-    if failures:
-        raise LiveMediaError("The recording record was deleted, but a stored file could not be removed.")
+        .all()
+    )
 
 
 def delete_live_recording(
@@ -597,12 +731,9 @@ def delete_live_recording(
     actor_user_id: int | None = None,
     session_token: str | None = None,
     actor_admin_id: int | None = None,
-) -> None:
+) -> dict[str, Any]:
     with get_db_context() as db:
-        query = db.query(LiveInterviewRecording).filter(
-            LiveInterviewRecording.id == int(recording_id),
-            LiveInterviewRecording.deletion_status == _ACTIVE_DELETION,
-        )
+        query = db.query(LiveInterviewRecording).filter(LiveInterviewRecording.id == int(recording_id))
         if actor_admin_id is not None:
             require_admin(actor_admin_id)
         else:
@@ -613,34 +744,270 @@ def delete_live_recording(
         record = query.first()
         if record is None:
             raise LiveMediaError("This recording is not available.")
-        paths = _delete_media_rows(db, int(recording_id))
-        record.deletion_status = "deleted"
-        record.deleted_at = _now()
-        record.recording_status = "deleted"
-    failures = _remove_paths(paths)
-    if actor_admin_id is not None:
-        log_event(
-            "admin.recording_delete",
-            f"Admin deleted live interview recording {int(recording_id)}",
-            actor_admin_id,
-            level="warning",
-        )
-    if failures:
-        raise LiveMediaError("The recording record was deleted, but some stored files could not be removed.")
+        rec_status = str(record.deletion_status or "")
+        if rec_status == _DELETED_DELETION:
+            pending = _collect_pending_media_for_recording(db, int(recording_id))
+            if not pending:
+                return {"id": int(recording_id), "status": _DELETED_DELETION, "pending_media": []}
+        elif rec_status not in {_ACTIVE_DELETION, _PENDING_DELETION}:
+            raise LiveMediaError("This recording is not available.")
+
+        media_rows = _collect_pending_media_for_recording(db, int(recording_id))
+        for item in media_rows:
+            _mark_media_pending_delete(item)
+        _mark_recording_pending_delete(record)
+        keys = [(int(item.id), str(item.storage_key)) for item in media_rows]
+
+    pending_media: list[int] = []
+    for media_id, key in keys:
+        removed, err = _remove_storage_key(key)
+        if removed:
+            with get_db_context() as db:
+                current = db.query(LiveInterviewMedia).filter(LiveInterviewMedia.id == int(media_id)).first()
+                if current is not None:
+                    _mark_media_deleted(current)
+        else:
+            pending_media.append(int(media_id))
+            logger.warning(
+                "live_media.delete_pending",
+                extra={
+                    "event": "live_media.delete_pending",
+                    "recording_id": int(recording_id),
+                    "media_id": int(media_id),
+                    "error": err,
+                },
+            )
+
+    if not pending_media:
+        with get_db_context() as db:
+            current = (
+                db.query(LiveInterviewRecording)
+                .filter(LiveInterviewRecording.id == int(recording_id))
+                .first()
+            )
+            if current is not None:
+                remaining = _collect_pending_media_for_recording(db, int(recording_id))
+                if not remaining:
+                    _mark_recording_deleted(current)
+        if actor_admin_id is not None:
+            log_event(
+                "admin.recording_delete",
+                f"Admin deleted live interview recording {int(recording_id)}",
+                actor_admin_id,
+                level="warning",
+            )
+        return {"id": int(recording_id), "status": _DELETED_DELETION, "pending_media": []}
+
+    raise LiveMediaError("The recording deletion is pending because some stored files could not be removed.")
 
 
-def cleanup_temporary_media() -> int:
-    removed = 0
-    root = storage_root()
-    for candidate in root.rglob("*.tmp"):
-        if not candidate.is_file():
-            continue
+def retry_pending_deletions(
+    *,
+    actor_user_id: int | None = None,
+    session_token: str | None = None,
+    actor_admin_id: int | None = None,
+    recording_id: int | None = None,
+) -> dict[str, Any]:
+    """Retry pending deletions. Public boundary revalidates authz; idempotent."""
+    with get_db_context() as db:
+        if actor_admin_id is not None:
+            require_admin(actor_admin_id)
+            rec_query = db.query(LiveInterviewRecording).filter(
+                LiveInterviewRecording.deletion_status == _PENDING_DELETION
+            )
+            med_query = db.query(LiveInterviewMedia).filter(
+                LiveInterviewMedia.deletion_status == _PENDING_DELETION
+            )
+        else:
+            if actor_user_id is None or not session_token:
+                raise LiveMediaError("Authentication is required to retry deletions.")
+            require_owned_session_token(session_token, actor_user_id)
+            rec_query = db.query(LiveInterviewRecording).filter(
+                LiveInterviewRecording.deletion_status == _PENDING_DELETION,
+                LiveInterviewRecording.owner_user_id == int(actor_user_id),
+            )
+            med_query = db.query(LiveInterviewMedia).filter(
+                LiveInterviewMedia.deletion_status == _PENDING_DELETION,
+                LiveInterviewMedia.owner_user_id == int(actor_user_id),
+            )
+        if recording_id is not None:
+            rec_query = rec_query.filter(LiveInterviewRecording.id == int(recording_id))
+            med_query = med_query.filter(LiveInterviewMedia.recording_id == int(recording_id))
+        rec_ids = [int(r.id) for r in rec_query.all()]
+        med_ids = [int(m.id) for m in med_query.all()]
+
+    results: dict[str, Any] = {"recordings": [], "media": []}
+    for rid in rec_ids:
         try:
-            candidate.unlink()
-            removed += 1
+            results["recordings"].append(
+                delete_live_recording(
+                    rid,
+                    actor_user_id=actor_user_id,
+                    session_token=session_token,
+                    actor_admin_id=actor_admin_id,
+                )
+            )
+        except LiveMediaError as exc:
+            results["recordings"].append({"id": rid, "status": _PENDING_DELETION, "error": str(exc)})
+    for mid in med_ids:
+        try:
+            results["media"].append(
+                delete_live_media(
+                    mid,
+                    actor_user_id=actor_user_id,
+                    session_token=session_token,
+                    actor_admin_id=actor_admin_id,
+                )
+            )
+        except LiveMediaError as exc:
+            results["media"].append({"id": mid, "status": _PENDING_DELETION, "error": str(exc)})
+    return results
+
+
+def cleanup_temporary_media(
+    *,
+    min_age_seconds: int = _TEMP_FILE_MIN_AGE_SECONDS,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Report stale temp media candidates. Dry-run by default; never deletes fresh files."""
+    now = time.time()
+    root = storage_root()
+    candidates: list[str] = []
+    skipped: list[dict[str, str]] = []
+    removed: list[str] = []
+    errors: list[dict[str, str]] = []
+    min_age = max(0, int(min_age_seconds))
+
+    for candidate in root.rglob(".tmp_live_media_*.part"):
+        try:
+            resolved = candidate.resolve()
+            if resolved == root or not resolved.is_relative_to(root):
+                skipped.append({"path": str(candidate), "reason": "outside_root"})
+                continue
+            if not candidate.is_file():
+                skipped.append({"path": str(candidate), "reason": "not_file"})
+                continue
+            age = now - candidate.stat().st_mtime
+            if age < min_age:
+                skipped.append({"path": str(candidate), "reason": "fresh"})
+                continue
+            rel = str(resolved.relative_to(root)).replace("\\", "/")
+            candidates.append(rel)
+            if dry_run:
+                continue
+            try:
+                candidate.unlink()
+                removed.append(rel)
+            except OSError:
+                errors.append({"path": rel, "error": "unlink_failed"})
         except OSError:
-            continue
-    return removed
+            errors.append({"path": str(candidate), "error": "stat_failed"})
+
+    return {
+        "dry_run": bool(dry_run),
+        "min_age_seconds": min_age,
+        "candidates": candidates,
+        "skipped": skipped,
+        "removed": removed,
+        "errors": errors,
+    }
+
+
+def run_storage_integrity_diagnostics(
+    *,
+    actor_admin_id: int | None = None,
+    min_temp_age_seconds: int = _TEMP_FILE_MIN_AGE_SECONDS,
+) -> dict[str, Any]:
+    """Read-only diagnostics. No DB/file mutations, no auto-repair/delete."""
+    if actor_admin_id is not None:
+        require_admin(actor_admin_id)
+
+    root = storage_root()
+    report: dict[str, Any] = {
+        "read_only": True,
+        "missing_files": [],
+        "checksum_mismatches": [],
+        "size_mismatches": [],
+        "invalid_storage_keys": [],
+        "pending_deletions": [],
+        "incomplete_records": [],
+        "legacy_without_manifest": [],
+        "candidate_orphans": [],
+        "temp_candidates": [],
+        "unverified": [],
+    }
+
+    referenced: set[str] = set()
+    with get_db_context() as db:
+        rows = db.query(LiveInterviewMedia).all()
+        for item in rows:
+            key = str(item.storage_key or "")
+            status = str(item.deletion_status or "")
+            rec = {
+                "media_id": int(item.id),
+                "recording_id": int(item.recording_id),
+                "owner_user_id": int(item.owner_user_id),
+                "media_type": str(item.media_type),
+                "deletion_status": status,
+            }
+            if not _safe_key(key):
+                report["invalid_storage_keys"].append({**rec, "result": "invalid_storage_key"})
+                continue
+            path = resolve_storage_key(key)
+            try:
+                rel = str(path.resolve().relative_to(root)).replace("\\", "/")
+            except Exception:
+                report["invalid_storage_keys"].append({**rec, "result": "outside_root"})
+                continue
+            referenced.add(rel)
+            if status == _PENDING_DELETION:
+                report["pending_deletions"].append(rec)
+            if str(item.media_status) not in {"ready"}:
+                report["incomplete_records"].append({**rec, "media_status": str(item.media_status)})
+            manifest = extract_capture_manifest(item.metadata_json if isinstance(item.metadata_json, dict) else {})
+            if manifest is None:
+                report["legacy_without_manifest"].append(rec)
+            if status == _DELETED_DELETION:
+                continue
+            if not path.exists():
+                report["missing_files"].append({**rec, "result": "confirmed_missing_file"})
+                continue
+            try:
+                actual_size = path.stat().st_size
+                expected_size = int(item.size_bytes or 0)
+                if actual_size != expected_size:
+                    report["size_mismatches"].append(
+                        {**rec, "expected_size": expected_size, "actual_size": actual_size}
+                    )
+                actual_checksum = _sha256_file(path)
+                if actual_checksum != str(item.checksum):
+                    report["checksum_mismatches"].append({**rec, "result": "confirmed_checksum_mismatch"})
+            except OSError:
+                report["unverified"].append({**rec, "result": "unverified_io_error"})
+
+    try:
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            if candidate.name.startswith(".tmp_live_media_") and candidate.suffix == ".part":
+                continue
+            try:
+                rel = str(candidate.resolve().relative_to(root)).replace("\\", "/")
+            except Exception:
+                logger.debug("live_media.diagnostics_skip_path", exc_info=True)
+                continue
+            if rel not in referenced:
+                report["candidate_orphans"].append(
+                    {"relative_path": rel, "result": "candidate_orphan", "note": "No DB row found; do not auto-delete"}
+                )
+    except OSError:
+        report["unverified"].append({"result": "unverified_scan_error"})
+
+    temp_report = cleanup_temporary_media(min_age_seconds=min_temp_age_seconds, dry_run=True)
+    report["temp_candidates"] = temp_report.get("candidates", [])
+    report["temp_skipped"] = temp_report.get("skipped", [])
+    report["temp_errors"] = temp_report.get("errors", [])
+    return report
 
 
 def recording_details(
