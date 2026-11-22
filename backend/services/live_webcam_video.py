@@ -11,7 +11,7 @@ from typing import Any
 
 import av
 from config.settings import settings
-from services.resource_monitor import acquire_heavy_task
+from services.resource_monitor import end_heavy_task, try_begin_heavy_task
 
 VIDEO_CODEC = "libx264"
 VIDEO_PIXEL_FORMAT = "yuv420p"
@@ -53,6 +53,7 @@ class LiveVideoRecorder:
         self._stop_requested = False
         self._finalized = False
         self._error: str | None = None
+        self._encoding_lease_held = False
         self._frames_queued = 0
         self._frames_encoded = 0
         self._dropped_frames = 0
@@ -73,13 +74,25 @@ class LiveVideoRecorder:
         with self._lock:
             self._error = str(message)
 
+    def _release_encoding_lease_locked(self) -> None:
+        if self._encoding_lease_held:
+            end_heavy_task("video_processing")
+            self._encoding_lease_held = False
+
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
             should_enable = bool(enabled)
             self._enabled = should_enable
             if should_enable:
-                self._stop_requested = False
                 if self._worker is None or not self._worker.is_alive():
+                    if not self._encoding_lease_held:
+                        allowed, reason = try_begin_heavy_task("video_processing")
+                        if not allowed:
+                            self._enabled = False
+                            self._error = reason or "Video processing is currently busy."
+                            return
+                        self._encoding_lease_held = True
+                    self._stop_requested = False
                     self._worker = threading.Thread(
                         target=self._consume, name="live-video-encoder", daemon=True
                     )
@@ -165,45 +178,58 @@ class LiveVideoRecorder:
             self._height = record.height
 
     def _consume(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is _STOP:
-                return
-            if not isinstance(item, VideoFrameRecord):
-                continue
-            try:
-                with self._lock:
-                    if self._finalized or self._overflowed or self._frames_encoded >= self.max_frames:
-                        if self._frames_encoded >= self.max_frames:
+        try:
+            while True:
+                item = self._queue.get()
+                if item is _STOP:
+                    return
+                if not isinstance(item, VideoFrameRecord):
+                    continue
+                try:
+                    with self._lock:
+                        if self._finalized or self._overflowed or self._frames_encoded >= self.max_frames:
+                            if self._frames_encoded >= self.max_frames:
+                                self._overflowed = True
+                            continue
+                    self._ensure_container(item)
+                    frame = av.VideoFrame.from_ndarray(item.pixels, format=VIDEO_PIXEL_FORMAT)
+                    frame.pts = self._rescale_pts(item)
+                    frame.time_base = VIDEO_TIME_BASE
+                    for packet in self._stream.encode(frame):
+                        self._container.mux(packet)
+                    with self._lock:
+                        self._frames_encoded += 1
+                        self._bytes_written = self._buffer.tell()
+                        if self._bytes_written > self.max_bytes:
                             self._overflowed = True
-                        continue
-                self._ensure_container(item)
-                frame = av.VideoFrame.from_ndarray(item.pixels, format=VIDEO_PIXEL_FORMAT)
-                frame.pts = self._rescale_pts(item)
-                frame.time_base = VIDEO_TIME_BASE
-                for packet in self._stream.encode(frame):
-                    self._container.mux(packet)
-                with self._lock:
-                    self._frames_encoded += 1
-                    self._bytes_written = self._buffer.tell()
-                    if self._bytes_written > self.max_bytes:
-                        self._overflowed = True
-            except Exception as exc:
-                self.set_error(f"Could not encode a camera frame: {exc}")
-                return
+                except Exception as exc:
+                    self.set_error(f"Could not encode a camera frame: {exc}")
+                    return
+        finally:
+            with self._lock:
+                self._release_encoding_lease_locked()
 
     def finalize(self) -> bytes:
-        with acquire_heavy_task("video_processing"):
-            with self._lock:
-                if self._finalized:
-                    return self._buffer.getvalue()
-                self._enabled = False
-                if not self._stop_requested:
-                    self._stop_requested = True
-                    self._queue.put(_STOP)
-                worker = self._worker
-            if worker is not None and worker.is_alive():
-                worker.join(timeout=10)
+        with self._lock:
+            if self._finalized:
+                return self._buffer.getvalue()
+            self._enabled = False
+            if not self._stop_requested:
+                self._stop_requested = True
+                self._queue.put(_STOP)
+            worker = self._worker
+            needs_finalize_lease = not self._encoding_lease_held
+
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=10)
+
+        acquired_finalize_lease = False
+        if needs_finalize_lease:
+            allowed, reason = try_begin_heavy_task("video_processing")
+            if not allowed:
+                raise RuntimeError(reason or "Video processing is currently busy.")
+            acquired_finalize_lease = True
+        try:
             with self._lock:
                 if not self._finalized:
                     try:
@@ -222,7 +248,11 @@ class LiveVideoRecorder:
                         self._stream = None
                     self._finalized = True
                     self._bytes_written = self._buffer.tell()
+                    self._release_encoding_lease_locked()
                 return self._buffer.getvalue() if self._error is None else b""
+        finally:
+            if acquired_finalize_lease:
+                end_heavy_task("video_processing")
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -251,6 +281,7 @@ class LiveVideoRecorder:
         if worker is not None and worker.is_alive():
             worker.join(timeout=10)
         with self._lock:
+            self._release_encoding_lease_locked()
             self._reset_locked()
 
     def _reset_locked(self) -> None:
