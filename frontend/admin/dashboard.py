@@ -150,9 +150,9 @@ def show_admin_dashboard() -> None:
         data_table(
             [
                 {
-                    "Provider": name,
-                    "Healthy": info["healthy"],
-                    "Model": info["model"],
+                    "Provider": name.title(),
+                    "Status": info.get("status", "Not checked"),
+                    "Model": info.get("model", ""),
                     "Error": info.get("error") or "",
                 }
                 for name, info in health.items()
