@@ -96,7 +96,7 @@ ai-interview-assistant/
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **LLM** | Groq / Gemini / Ollama / Mistral | Centralized provider manager with automatic fallback |
+| **LLM** | Groq / Gemini / Ollama | Centralized provider manager with automatic fallback |
 | **Embeddings** | Sentence Transformers (all-MiniLM-L6-v2) | Local text embeddings |
 | **Vector DB** | FAISS | Local vector similarity search |
 | **Speech-to-Text** | Faster-Whisper | Local audio transcription |
@@ -227,18 +227,24 @@ MAX_CONTEXT_CHARS=6000
 ```
 
 Relative storage paths are resolved against the project root, so startup does not depend on the
-current working directory. Gemini is the primary provider. Set `GEMINI_API_KEY` in `.env`;
-`GOOGLE_API_KEY` remains supported as a backward-compatible alias. Model availability depends on
-the API key and endpoint; use `GEMINI_MODEL` to select a model available to your key. The verified
-default is `gemini-3.5-flash`. Mistral is no longer selectable and is never used as a fallback.
+current working directory. Groq is the primary provider with `groq -> gemini -> ollama` fallback.
+Set `GROQ_API_KEY` in `.env`; use `GROQ_MODEL` to select a model available to your key. Gemini
+remains the secondary provider and `GOOGLE_API_KEY` is a backward-compatible alias for
+`GEMINI_API_KEY`.
 
-### Gemini API Setup (primary provider)
+### Groq API Setup (primary provider)
+1. Go to https://console.groq.com/keys
+2. Create a new API key.
+3. Add to `.env` as `GROQ_API_KEY`.
+4. Optionally set `GROQ_MODEL` to another model available to your key.
+5. Verify with `Settings -> Providers -> Check provider health` or see `docs/AI_PROVIDER_SETUP.md`.
+6. Free tier and quota limits depend on the Groq account.
+
+### Gemini API Setup (secondary provider)
 1. Go to https://aistudio.google.com/apikey
 2. Create a new API key and enable the Generative Language API.
 3. Add to `.env` as `GEMINI_API_KEY`.
 4. Optionally set `GEMINI_MODEL` to another model available to your key.
-5. Verify with `Settings -> Providers -> Check provider health` or see `docs/AI_PROVIDER_SETUP.md`.
-6. Free tier and quota limits depend on the Google AI account.
 
 ### Groq API Setup (optional fallback)
 1. Go to https://console.groq.com/keys
@@ -406,7 +412,7 @@ MIT License - See LICENSE file for details.
 ## Final Year Project Presentation Points
 
 ### Technical Highlights
-1. **Multi-provider LLM Architecture** - Abstracted LLM service supporting Groq, Gemini, Ollama, and Mistral with fallback
+1. **Multi-provider LLM Architecture** - Abstracted LLM service supporting Groq, Gemini, and Ollama with fallback
 2. **RAG Pipeline** - Complete document processing, embedding, vector storage, and retrieval
 3. **Structured Output** - Pydantic models for all LLM responses with validation
 4. **Local Speech-to-Text** - Faster-Whisper integration (no paid APIs)
@@ -442,7 +448,7 @@ A: Documents → Load → Clean → Split (1000 chars, 200 overlap) → Embed (a
 A: FAISS is lighter, faster for CPU, no separate server needed, and sufficient for local document retrieval use case.
 
 **Q: How do you handle LLM rate limits?**
-A: Bounded exponential backoff, configurable timeout/retries, rate-limit cooldowns, circuit breakers, and automatic fallback (Groq → Gemini → Ollama → Mistral).
+A: Bounded exponential backoff, configurable timeout/retries, rate-limit cooldowns, circuit breakers, and automatic fallback (Groq → Gemini → Ollama).
 
 **Q: How is answer evaluation structured?**
 A: 5-dimension rubric (Technical Accuracy, Relevance, Communication, Confidence, Completeness) each 0-10, with qualitative feedback and suggested improvements.
@@ -460,7 +466,7 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 
 **AI Interview Assistant** | Final Year Project | Python, Streamlit, LLMs, RAG, FAISS, Whisper
 
-- Built a full-stack AI-powered interview preparation platform using Groq, Gemini, Ollama, and Mistral LLMs, local embeddings (Sentence Transformers), FAISS vector database, and Faster-Whisper for speech-to-text
+- Built a full-stack AI-powered interview preparation platform using Groq, Gemini, and Ollama LLMs, local embeddings (Sentence Transformers), FAISS vector database, and Faster-Whisper for speech-to-text
 - Implemented modular RAG pipeline: document loading (PDF/DOCX), text splitting, embedding generation, vector storage, and contextual retrieval
 - Designed multi-provider LLM abstraction with automatic fallback, structured output validation (Pydantic), and retry logic with exponential backoff
 - Developed 7-category personalized interview question generator with dynamic follow-up based on candidate responses
@@ -481,7 +487,7 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 - 📊 Detailed evaluation & improvement plans
 - 📈 Progress tracking dashboard
 
-**Tech Stack:** Python, Streamlit, Groq/Gemini/Ollama/Mistral LLMs, Sentence Transformers, FAISS, Faster-Whisper, SQLite, Pydantic
+**Tech Stack:** Python, Streamlit, Groq/Gemini/Ollama LLMs, Sentence Transformers, FAISS, Faster-Whisper, SQLite, Pydantic
 
 **Free & Open Source:** Runs entirely on free APIs and local models - no paid services required.#   A I - J o b - I n t e r v i e w - A s s i s t a n t 
  

@@ -15,7 +15,10 @@ os.environ.setdefault("FAISS_OPT_LEVEL", "generic")
 
 _UNSET = object()
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_AI_PRIMARY_PROVIDER = "groq"
+DEFAULT_PROVIDER_PRIORITY = "groq,gemini,ollama"
 
 
 def _is_unset(value: Any) -> bool:
@@ -100,6 +103,14 @@ def _resolve_list(current: Any, name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _resolve_provider_priority(current: Any) -> str:
+    if not _is_unset(current):
+        return str(current)
+    alias = _text(os.getenv("AI_PROVIDER_PRIORITY"))
+    legacy = _text(os.getenv("PROVIDER_PRIORITY"))
+    return alias or legacy or DEFAULT_PROVIDER_PRIORITY
+
+
 def runtime_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else PROJECT_ROOT / path
@@ -130,11 +141,6 @@ class Settings:
     gemini_base_url: Any = _UNSET
     gemini_api_version: Any = _UNSET
     gemini_fallback_models: Any = _UNSET
-
-    mistral_api_key: Any = _UNSET
-    mistral_model: Any = _UNSET
-    mistral_base_url: Any = _UNSET
-    mistral_fallback_models: Any = _UNSET
 
     groq_api_key: Any = _UNSET
     groq_model: Any = _UNSET
@@ -192,9 +198,14 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.llm_provider = _resolve(self.llm_provider, "LLM_PROVIDER", str, "auto")
-        self.llm_model = _resolve(self.llm_model, "LLM_MODEL", str, DEFAULT_GEMINI_MODEL)
+        self.llm_model = _resolve(self.llm_model, "LLM_MODEL", str, DEFAULT_GROQ_MODEL)
         self.ai_provider_mode = _resolve(self.ai_provider_mode, "AI_PROVIDER_MODE", str, "auto")
-        self.ai_primary_provider = _resolve(self.ai_primary_provider, "AI_PRIMARY_PROVIDER", str, "")
+        self.ai_primary_provider = _resolve(
+            self.ai_primary_provider,
+            "AI_PRIMARY_PROVIDER",
+            str,
+            DEFAULT_AI_PRIMARY_PROVIDER,
+        )
         self.ai_fallback_enabled = _resolve_bool(
             self.ai_fallback_enabled, "AI_FALLBACK_ENABLED", True
         )
@@ -249,21 +260,8 @@ class Settings:
             [self.gemini_model],
         )
 
-        self.mistral_api_key = _resolve(self.mistral_api_key, "MISTRAL_API_KEY", str, "")
-        self.mistral_model = _resolve(
-            self.mistral_model, "MISTRAL_MODEL", str, "mistral-small-latest"
-        )
-        self.mistral_base_url = _resolve(
-            self.mistral_base_url, "MISTRAL_BASE_URL", str, "https://api.mistral.ai/v1"
-        )
-        self.mistral_fallback_models = _resolve_list(
-            self.mistral_fallback_models,
-            "MISTRAL_FALLBACK_MODELS",
-            ["mistral-large-latest"],
-        )
-
         self.groq_api_key = _resolve(self.groq_api_key, "GROQ_API_KEY", str, "")
-        self.groq_model = _resolve(self.groq_model, "GROQ_MODEL", str, "openai/gpt-oss-20b")
+        self.groq_model = _resolve(self.groq_model, "GROQ_MODEL", str, DEFAULT_GROQ_MODEL)
         self.groq_fallback_models = _resolve_list(
             self.groq_fallback_models,
             "GROQ_FALLBACK_MODELS",
@@ -276,12 +274,7 @@ class Settings:
         )
         self.ollama_model = _resolve(self.ollama_model, "OLLAMA_MODEL", str, "qwen3.5:4b")
 
-        self.provider_priority = _resolve(
-            self.provider_priority,
-            "PROVIDER_PRIORITY",
-            str,
-            "gemini,groq,ollama",
-        )
+        self.provider_priority = _resolve_provider_priority(self.provider_priority)
 
         self.max_resume_chars = _resolve(self.max_resume_chars, "MAX_RESUME_CHARS", int, 8000)
         self.max_jd_chars = _resolve(self.max_jd_chars, "MAX_JD_CHARS", int, 6000)
