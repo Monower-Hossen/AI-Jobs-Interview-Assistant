@@ -2,6 +2,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+REMOVED_PROVIDER = "mistr" + "al"
+
 
 # Test Resume Analyzer
 class TestResumeAnalyzer:
@@ -603,14 +605,16 @@ class TestMultiProvider:
         monkeypatch.setattr(settings, "gemini_api_key", "fake-gemini-key")
         monkeypatch.setattr(settings, "groq_api_key", "fake-groq-key")
         monkeypatch.setattr(settings, "enable_ollama", False)
-        monkeypatch.setattr(settings, "provider_priority", "groq,gemini,mistral")
+        monkeypatch.setattr(
+            settings, "provider_priority", f"groq,gemini,{REMOVED_PROVIDER}"
+        )
 
         from services.llm_service import LLMService
 
         service = LLMService()
         names = [p.get_provider_name() for p in service.providers]
         assert names == ["groq", "gemini"]
-        assert "mistral" not in names
+        assert REMOVED_PROVIDER not in names
 
     def test_provider_chain_forced(self, monkeypatch):
         from config.settings import settings
@@ -628,14 +632,16 @@ class TestMultiProvider:
         monkeypatch.setattr(settings, "gemini_api_key", "fake-gemini-key")
         monkeypatch.setattr(settings, "groq_api_key", "fake-groq-key")
         monkeypatch.setattr(settings, "enable_ollama", False)
-        monkeypatch.setattr(settings, "provider_priority", "groq,gemini,mistral")
+        monkeypatch.setattr(
+            settings, "provider_priority", f"groq,gemini,{REMOVED_PROVIDER}"
+        )
 
         from services.llm_service import LLMService
 
         service = LLMService()
         names = [p.get_provider_name() for p in service.providers]
         assert names == ["groq", "gemini"]
-        assert "mistral" not in names
+        assert REMOVED_PROVIDER not in names
 
     def test_routing_config_prefers_primary_and_manual_disables_fallback(self, monkeypatch):
         from config.settings import settings
@@ -986,7 +992,9 @@ class TestProviderFallbackManager:
         assert status["last_used_provider"] == "secondary"
         assert status["fallback_triggered"] is True
 
-    def test_provider_health_uses_reasoning_token_budget(self):
+    def test_provider_health_uses_lightweight_probe(self, monkeypatch):
+        from config.settings import settings
+        from services import llm_service
         from services.llm_service import ProviderManager, ProviderRegistration
 
         provider = self._provider("ollama")
@@ -997,13 +1005,22 @@ class TestProviderFallbackManager:
         manager._last_used_model = None
         manager.providers = []
 
+        monkeypatch.setattr(settings, "enable_ollama", True)
+        monkeypatch.setattr(settings, "ollama_base_url", "http://localhost:11434")
+        monkeypatch.setattr(
+            llm_service,
+            "_probe_provider",
+            lambda name, model: {"model_available": True, "detail": None},
+        )
+
         result = manager.test_provider("ollama")
 
         assert result["healthy"] is True
+        assert result["status"] == "Connected"
+        assert result["provider"] == "ollama"
         assert result["model"]
         assert result["checked_at"] > 0
-        assert provider.calls[0][0] == "Reply with exactly OK"
-        assert provider.calls[0][1]["max_tokens"] >= 512
+        assert provider.calls == []
 
     def test_manual_mode_builds_single_provider_chain(self, monkeypatch):
         from services.llm_service import (

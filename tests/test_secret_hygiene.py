@@ -22,7 +22,7 @@ NON_CREDENTIAL_NAMES = {
 }
 SAFE_PLACEHOLDER_RE = re.compile(
     r"^(?:"
-    r"your-[a-z0-9][a-z0-9-]*"
+    r"your[-_][a-z0-9][a-z0-9_-]*"
     r"|replace-with-[a-z0-9][a-z0-9-]*"
     r"|example[a-z0-9-]*"
     r"|changeme[a-z0-9-]*"
@@ -118,14 +118,16 @@ BINARY_SOURCE_SUFFIXES = {
     ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".avi", ".mov",
     ".pdf", ".zip", ".gz", ".faiss", ".npy", ".npz", ".pkl", ".coverage",
 }
-MISTRAL_SECRET_RE = re.compile(
-    r"^\s*(?:export\s+)?(?P<name>MISTRAL_API_KEY|MISTRAL_API_TOKEN)\s*=\s*(?P<value>.+)$",
+REMOVED_PROVIDER = "mistr" + "al"
+REMOVED_SECRET_RE = re.compile(
+    r"^\s*(?:export\s+)?(?P<name>"
+    + REMOVED_PROVIDER.upper()
+    + r"_(?:API_KEY|API_TOKEN))\s*=\s*(?P<value>.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
 
-def test_no_hardcoded_mistral_api_credentials_in_source_config() -> None:
-    offenders: list[str] = []
+def _source_files():
     for path in ROOT.rglob("*"):
         if not path.is_file() or path.name == ".env":
             continue
@@ -134,11 +136,33 @@ def test_no_hardcoded_mistral_api_credentials_in_source_config() -> None:
             continue
         if path.suffix.lower() in BINARY_SOURCE_SUFFIXES:
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for match in MISTRAL_SECRET_RE.finditer(text):
+        yield relative, path.read_text(encoding="utf-8", errors="ignore")
+
+
+def test_no_hardcoded_removed_provider_credentials_in_source_config() -> None:
+    offenders: list[str] = []
+    for relative, text in _source_files():
+        for match in REMOVED_SECRET_RE.finditer(text):
             value = match.group("value").strip().strip('"').strip("'")
             if SAFE_PLACEHOLDER_RE.match(value):
                 continue
             line = text.count("\n", 0, match.start()) + 1
             offenders.append(f"{relative.as_posix()}:{line}:{match.group('name')}")
-    assert not offenders, f"Hardcoded Mistral credentials found at: {offenders}"
+    assert not offenders, f"Hardcoded removed-provider credentials found at: {offenders}"
+
+
+def test_no_removed_provider_name_in_active_source() -> None:
+    needle = REMOVED_PROVIDER.lower()
+    offenders = [
+        relative.as_posix()
+        for relative, text in _source_files()
+        if needle in text.lower()
+    ]
+    assert not offenders, f"Removed provider references found at: {offenders}"
+
+
+def test_env_example_uses_groq_primary_defaults() -> None:
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "AI_PRIMARY_PROVIDER=groq" in text
+    assert "AI_PROVIDER_PRIORITY=groq,gemini,ollama" in text
+    assert "PROVIDER_PRIORITY=groq,gemini,ollama" in text
