@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -25,12 +26,25 @@ GEMINI_KEY_HINT = (
     "or the provider settings."
 )
 
+SUPPORTED_PROVIDERS = ("groq", "gemini", "ollama")
+DEFAULT_PROVIDER_PRIORITY = "groq,gemini,ollama"
+PROVIDER_LABELS = {"groq": "Groq", "gemini": "Gemini", "ollama": "Ollama"}
+
+HEALTH_CONNECTED = "Connected"
+HEALTH_NOT_CONFIGURED = "Not configured"
+HEALTH_AUTH_FAILED = "Authentication failed"
+HEALTH_CONNECTION_FAILED = "Connection failed"
+HEALTH_SERVICE_UNAVAILABLE = "Service unavailable"
+HEALTH_DISABLED = "Disabled"
+HEALTH_NOT_CHECKED = "Not checked"
+
+_SECRET_QUERY_RE = re.compile(
+    r"([?&](?:api[_-]?key|key|token)=)[^&\s]+",
+    re.IGNORECASE,
+)
+
 
 class GeminiAPIError(Exception):
-    pass
-
-
-class MistralAPIError(Exception):
     pass
 
 
@@ -56,21 +70,17 @@ def _redact(text: str) -> str:
         settings.gemini_api_key,
         os.getenv("GOOGLE_API_KEY", ""),
         settings.groq_api_key,
-        settings.mistral_api_key,
     )
     for secret in secrets:
         if secret and len(secret) >= 8:
             result = result.replace(secret, "[REDACTED]")
+    result = _SECRET_QUERY_RE.sub(r"\1[REDACTED]", result)
     return result[:500]
 
 
 def is_api_key_error(exc: BaseException) -> bool:
     msg = str(exc)
-    return (
-        "API key" in msg
-        or "api key" in msg
-        or isinstance(exc, (GeminiAPIError, MistralAPIError, GroqAPIError))
-    )
+    return "API key" in msg or "api key" in msg or isinstance(exc, (GeminiAPIError, GroqAPIError))
 
 
 def is_auth_error(exc: BaseException) -> bool:
@@ -193,7 +203,7 @@ _MAX_RATE_LIMIT_RETRIES = 1
 _SHORT_RATE_LIMIT_RETRY = 5.0
 _DEFAULT_RATE_LIMIT_COOLDOWN = 30.0
 _RATE_LIMIT_BUFFER = 1.0
-_HEALTH_MAX_TOKENS = 512
+_HEALTH_TIMEOUT_SECONDS = 8.0
 _request_lock = threading.RLock()
 _rate_limit_lock = threading.RLock()
 _rate_limit_info: dict[tuple[str, str], float] = {}
@@ -388,7 +398,7 @@ class _HTTPProvider(LLMProvider):
 
     def __init__(self, api_key: str, model: str, base_url: str):
         if not api_key:
-            raise ValueError(f"{self.provider_name.title()} API key not provided")
+            raise ValueError(f"{self.provider_name.upper()}_API_KEY not provided")
 
         timeout = httpx.Timeout(
             connect=10.0,
@@ -622,17 +632,6 @@ class GroqProvider(_HTTPProvider):
         )
 
 
-class MistralProvider(_HTTPProvider):
-    provider_name = "mistral"
-
-    def __init__(self, api_key=None, model=None, base_url=None):
-        super().__init__(
-            api_key or settings.mistral_api_key,
-            model or os.getenv("MISTRAL_MODEL", settings.mistral_model),
-            base_url or os.getenv("MISTRAL_BASE_URL", settings.mistral_base_url),
-        )
-
-
 class OllamaProvider(_HTTPProvider):
     provider_name = "ollama"
 
@@ -648,23 +647,168 @@ class OllamaProvider(_HTTPProvider):
 
 
 def _aggregate_provider_error(errors: list[str]) -> RuntimeError:
-    prefix = (
-        "Gemini request failed"
-        if any(item.startswith("gemini:") for item in errors)
-        else "All providers failed"
-    )
-    return RuntimeError(f"{prefix}. {'; '.join(errors)}")
+    for name, label in (("groq", "Groq"), ("gemini", "Gemini")):
+        if any(item.startswith(f"{name}:") for item in errors):
+            return RuntimeError(f"{label} request failed. {'; '.join(errors)}")
+    return RuntimeError(f"All providers failed. {'; '.join(errors)}")
 
 
 def _configured_model(name: str) -> str:
     values = {
-        "gemini": ("GEMINI_MODEL", settings.gemini_model),
         "groq": ("GROQ_MODEL", settings.groq_model),
-        "mistral": ("MISTRAL_MODEL", settings.mistral_model),
+        "gemini": ("GEMINI_MODEL", settings.gemini_model),
         "ollama": ("OLLAMA_MODEL", settings.ollama_model),
     }
     env_name, default = values.get(name, (name.upper() + "_MODEL", name))
     return os.getenv(env_name, default)
+
+
+def get_provider_registry() -> dict[str, dict[str, str]]:
+    """Return the single source of truth for selectable providers and models."""
+    return {
+        name: {
+            "name": name,
+            "label": PROVIDER_LABELS[name],
+            "model": _configured_model(name),
+            "credential_env": "OLLAMA_BASE_URL" if name == "ollama" else f"{name.upper()}_API_KEY",
+        }
+        for name in SUPPORTED_PROVIDERS
+    }
+
+
+def _health_result_base(name: str, model: str) -> dict[str, Any]:
+    return {
+        "provider": name,
+        "healthy": False,
+        "status": HEALTH_NOT_CHECKED,
+        "configured": False,
+        "enabled": False,
+        "model": model,
+        "model_available": None,
+        "error": None,
+        "latency_ms": None,
+        "checked_at": time.time(),
+    }
+
+
+class _HealthAuthError(Exception):
+    pass
+
+
+class _HealthServiceError(Exception):
+    pass
+
+
+def _probe_provider(name: str, model: str) -> dict[str, Any]:
+    if name == "groq":
+        base_url = (os.getenv("GROQ_BASE_URL", settings.groq_base_url) or "").rstrip("/")
+        headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
+        with httpx.Client(base_url=base_url, headers=headers, timeout=_HEALTH_TIMEOUT_SECONDS) as client:
+            response = client.get("/models")
+        if response.status_code in (401, 403):
+            raise _HealthAuthError("Groq rejected the configured API key")
+        response.raise_for_status()
+        data = response.json()
+        available = {str(item.get("id")) for item in data.get("data", []) if item.get("id")}
+        return {
+            "model_available": model in available if available else None,
+            "detail": None if model in available or not available else "Configured model not listed",
+        }
+
+    if name == "gemini":
+        from google import genai
+
+        gemini_client = genai.Client(
+            api_key=settings.gemini_api_key,
+            http_options=_gemini_http_options(),
+        )
+        gemini_models: set[str] = set()
+        try:
+            for item in gemini_client.models.list():
+                value = getattr(item, "name", None)
+                if value:
+                    gemini_models.add(str(value).split("/")[-1])
+        except Exception as exc:
+            if is_auth_error(exc) or is_api_key_error(exc):
+                raise _HealthAuthError("Gemini rejected the configured API key") from exc
+            if is_retryable_error(exc):
+                raise httpx.ConnectError(_error_message(exc)) from exc
+            raise _HealthServiceError(_error_message(exc)) from exc
+        return {
+            "model_available": model in gemini_models if gemini_models else None,
+            "detail": (
+                None
+                if model in gemini_models or not gemini_models
+                else "Configured model not listed"
+            ),
+        }
+
+    base_url = (os.getenv("OLLAMA_BASE_URL", settings.ollama_base_url) or "").rstrip("/")
+    base_url = base_url.removesuffix("/v1")
+    with httpx.Client(base_url=base_url, timeout=_HEALTH_TIMEOUT_SECONDS) as client:
+        response = client.get("/api/tags")
+    if response.status_code in (401, 403):
+        raise _HealthAuthError("Ollama rejected the request")
+    response.raise_for_status()
+    data = response.json()
+    available = {str(item.get("name")) for item in data.get("models", []) if item.get("name")}
+    return {
+        "model_available": model in available if available else None,
+        "detail": None if model in available or not available else "Configured model not listed",
+    }
+
+
+def _evaluate_provider_health(
+    name: str,
+    *,
+    registered: bool = True,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    model = _configured_model(name)
+    result = _health_result_base(name, model)
+    result["enabled"] = bool(registered and enabled)
+
+    if not registered:
+        result["status"] = HEALTH_SERVICE_UNAVAILABLE
+        result["error"] = "Unknown provider"
+        return result
+    if not enabled or (name == "ollama" and not settings.enable_ollama):
+        result["status"] = HEALTH_DISABLED
+        result["error"] = "Provider disabled"
+        return result
+
+    configured = bool(settings.ollama_base_url) if name == "ollama" else bool(
+        getattr(settings, f"{name}_api_key", "")
+    )
+    result["configured"] = configured
+    if not configured:
+        result["status"] = HEALTH_NOT_CONFIGURED
+        result["error"] = (
+            "Ollama base URL not configured"
+            if name == "ollama"
+            else f"{name.upper()}_API_KEY not configured"
+        )
+        return result
+
+    started = time.perf_counter()
+    try:
+        probe = _probe_provider(name, model)
+    except _HealthAuthError as exc:
+        result["status"] = HEALTH_AUTH_FAILED
+        result["error"] = _error_message(exc)
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+        result["status"] = HEALTH_CONNECTION_FAILED
+        result["error"] = _error_message(exc)
+    except Exception as exc:
+        result["status"] = HEALTH_SERVICE_UNAVAILABLE
+        result["error"] = _error_message(exc)
+    else:
+        result["status"] = HEALTH_CONNECTED
+        result["healthy"] = True
+        result["model_available"] = probe.get("model_available")
+        result["error"] = probe.get("detail")
+    result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    return result
 
 
 class ProviderManager:
@@ -677,9 +821,13 @@ class ProviderManager:
         self.providers = self._build_chain()
 
     def _register_defaults(self) -> None:
-        self.register_provider("gemini", GeminiProvider)
-        self.register_provider("groq", GroqProvider)
-        self.register_provider("ollama", OllamaProvider)
+        factories = {
+            "groq": GroqProvider,
+            "gemini": GeminiProvider,
+            "ollama": OllamaProvider,
+        }
+        for name in SUPPORTED_PROVIDERS:
+            self.register_provider(name, factories[name])
 
     def register_provider(
         self,
@@ -701,13 +849,9 @@ class ProviderManager:
         manual_mode = mode in {"manual", "strict", "fixed", "single"}
         fallback = bool(settings.ai_fallback_enabled) and not manual_mode
         requested = requested.strip().lower()
-        if requested == "mistral":
-            requested = "gemini"
         priority: list[str] = []
-        for item in (settings.provider_priority or "").split(","):
+        for item in (settings.provider_priority or DEFAULT_PROVIDER_PRIORITY).split(","):
             name = item.strip().lower()
-            if name == "mistral":
-                continue
             if name and name not in priority:
                 priority.append(name)
         return requested, mode, fallback, priority
@@ -942,56 +1086,23 @@ class ProviderManager:
 
     def test_provider(self, name: str) -> dict[str, Any]:
         registration = self.registry.get(name)
-        model = _configured_model(name)
-        checked_at = time.time()
         if registration is None:
-            return {
-                "healthy": False,
-                "error": "Unknown provider",
-                "model": model,
-                "checked_at": checked_at,
-            }
-        if not registration.enabled:
-            return {
-                "healthy": False,
-                "error": "Provider disabled",
-                "model": model,
-                "checked_at": checked_at,
-            }
-        if name != "ollama" and not getattr(settings, f"{name}_api_key", ""):
-            return {
-                "healthy": False,
-                "error": "No API key configured",
-                "model": model,
-                "checked_at": checked_at,
-            }
-        try:
-            provider = registration.factory()
-            response = provider.generate(
-                "Reply with exactly OK",
-                max_tokens=_HEALTH_MAX_TOKENS,
-                temperature=0,
-            )
-            return {
-                "healthy": bool(response.content and response.content.strip()),
-                "error": (
-                    None if response.content and response.content.strip() else "Empty response"
-                ),
-                "model": response.model or model,
-                "latency_ms": round(response.latency_ms, 1),
-                "checked_at": checked_at,
-                "response_length": len(response.content),
-            }
-        except Exception as exc:
-            return {
-                "healthy": False,
-                "error": _error_message(exc),
-                "model": model,
-                "checked_at": checked_at,
-            }
+            return _evaluate_provider_health(name, registered=False)
+        return _evaluate_provider_health(
+            name,
+            registered=True,
+            enabled=registration.enabled,
+        )
 
     def health(self) -> dict[str, dict]:
-        return {name: self.test_provider(name) for name in self.registry}
+        return {
+            name: _evaluate_provider_health(
+                name,
+                registered=True,
+                enabled=registration.enabled,
+            )
+            for name, registration in self.registry.items()
+        }
 
 
 _provider_manager: ProviderManager | None = None
@@ -1056,11 +1167,14 @@ def _build_provider_chain(provider_name: str) -> list[LLMProvider]:
 
 
 def check_provider_health() -> dict[str, dict]:
-    return ProviderManager().health()
+    return {
+        name: _evaluate_provider_health(name)
+        for name in get_provider_registry()
+    }
 
 
 def test_provider_connection(name: str) -> dict[str, Any]:
-    return ProviderManager().test_provider(name)
+    return _evaluate_provider_health(name, registered=name in get_provider_registry())
 
 
 def get_provider_status() -> dict[str, Any]:
