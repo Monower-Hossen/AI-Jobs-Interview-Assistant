@@ -196,6 +196,15 @@ class Settings:
     admin_email: Any = _UNSET
     password_min_length: Any = _UNSET
 
+    resource_guardrails_enabled: Any = _UNSET
+    resource_monitor_enabled: Any = _UNSET
+    resource_monitor_cache_seconds: Any = _UNSET
+    resource_low_available_mb: Any = _UNSET
+    resource_critical_available_mb: Any = _UNSET
+    resource_allow_concurrent_heavy_ml: Any = _UNSET
+    resource_low_memory_mode: Any = _UNSET
+    allow_cuda_inference: Any = _UNSET
+
     def __post_init__(self) -> None:
         self.llm_provider = _resolve(self.llm_provider, "LLM_PROVIDER", str, "auto")
         self.llm_model = _resolve(self.llm_model, "LLM_MODEL", str, DEFAULT_GROQ_MODEL)
@@ -297,6 +306,43 @@ class Settings:
 
         self.whisper_model = _resolve(self.whisper_model, "WHISPER_MODEL", str, "base")
         self.whisper_device = _resolve(self.whisper_device, "WHISPER_DEVICE", str, "cpu")
+
+        self.resource_guardrails_enabled = _resolve_bool(
+            self.resource_guardrails_enabled, "RESOURCE_GUARDRAILS_ENABLED", True
+        )
+        self.resource_monitor_enabled = _resolve_bool(
+            self.resource_monitor_enabled, "RESOURCE_MONITOR_ENABLED", True
+        )
+        self.resource_monitor_cache_seconds = _resolve(
+            self.resource_monitor_cache_seconds, "RESOURCE_MONITOR_CACHE_SECONDS", int, 15
+        )
+        self.resource_low_available_mb = _resolve(
+            self.resource_low_available_mb, "RESOURCE_LOW_AVAILABLE_MB", int, 1600
+        )
+        self.resource_critical_available_mb = _resolve(
+            self.resource_critical_available_mb, "RESOURCE_CRITICAL_AVAILABLE_MB", int, 900
+        )
+        self.resource_allow_concurrent_heavy_ml = _resolve_bool(
+            self.resource_allow_concurrent_heavy_ml,
+            "RESOURCE_ALLOW_CONCURRENT_HEAVY_ML",
+            False,
+        )
+        self.resource_low_memory_mode = _resolve_bool(
+            self.resource_low_memory_mode, "RESOURCE_LOW_MEMORY_MODE", False
+        )
+        self.allow_cuda_inference = _resolve_bool(
+            self.allow_cuda_inference, "ALLOW_CUDA_INFERENCE", False
+        )
+
+        # Phase 1 safe defaults: keep heavy ML local inference CPU-only unless explicitly allowed.
+        if not self.allow_cuda_inference:
+            if str(self.whisper_device).lower() != "cpu":
+                self.whisper_device = "cpu"
+            if str(self.embedding_device).lower() != "cpu":
+                self.embedding_device = "cpu"
+
+        if self.resource_low_memory_mode and str(self.whisper_model).lower() == "base":
+            self.whisper_model = "tiny"
 
         self.vector_store_type = _resolve(self.vector_store_type, "VECTOR_STORE_TYPE", str, "faiss")
         self.vector_store_path = _env_path("VECTOR_STORE_PATH", "data/vector_store")
