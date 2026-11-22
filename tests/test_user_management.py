@@ -443,6 +443,10 @@ class TestAdminCreateUserForms:
         from streamlit.testing.v1 import AppTest
 
         monkeypatch.setattr(llm_service, "check_provider_health", dict)
+        # Resource sidebar reads real host memory; isolate to keep this UI-flow test deterministic.
+        import frontend.shared.components as shared_components
+
+        monkeypatch.setattr(shared_components, "render_resource_status_sidebar", lambda *a, **k: None)
         admin = get_account(admin_id)
         assert admin is not None
         app = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=30)
