@@ -16,6 +16,7 @@ from services.resource_monitor import end_heavy_task, try_begin_heavy_task
 VIDEO_CODEC = "libx264"
 VIDEO_PIXEL_FORMAT = "yuv420p"
 VIDEO_TIME_BASE = Fraction(1, 90_000)
+VIDEO_CONTAINER = "mp4"
 _STOP = object()
 
 
@@ -57,6 +58,7 @@ class LiveVideoRecorder:
         self._frames_queued = 0
         self._frames_encoded = 0
         self._dropped_frames = 0
+        self._queue_overflow_count = 0
         self._timestamp_adjustments = 0
         self._bytes_written = 0
         self._first_pts_seconds: float | None = None
@@ -64,6 +66,8 @@ class LiveVideoRecorder:
         self._width = 0
         self._height = 0
         self._overflowed = False
+        self._first_received_monotonic_ns: int | None = None
+        self._last_received_monotonic_ns: int | None = None
 
     @property
     def enabled(self) -> bool:
@@ -104,6 +108,7 @@ class LiveVideoRecorder:
     def enqueue(self, frame: Any) -> None:
         if not self.enabled:
             return
+        received_ns = time.monotonic_ns()
         try:
             pixels = frame.to_ndarray(format=VIDEO_PIXEL_FORMAT).copy(order="C")
             record = VideoFrameRecord(
@@ -121,6 +126,9 @@ class LiveVideoRecorder:
             self._queue.put_nowait(record)
             with self._lock:
                 self._frames_queued += 1
+                if self._first_received_monotonic_ns is None:
+                    self._first_received_monotonic_ns = received_ns
+                self._last_received_monotonic_ns = received_ns
         except queue.Full:
             try:
                 self._queue.get_nowait()
@@ -128,6 +136,7 @@ class LiveVideoRecorder:
                 pass
             with self._lock:
                 self._dropped_frames += 1
+                self._queue_overflow_count += 1
 
     @staticmethod
     def _coerce_time_base(value: Any) -> Fraction | None:
@@ -256,20 +265,31 @@ class LiveVideoRecorder:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            duration = max(0.0, float(self._last_pts) / float(VIDEO_TIME_BASE))
+            duration = 0.0
+            if self._last_pts >= 0:
+                duration = max(0.0, float(self._last_pts + 1) / float(self.fps))
+            elif self._frames_encoded > 0:
+                duration = max(0.0, float(self._frames_encoded) / float(self.fps))
             return {
                 "enabled": self._enabled,
                 "finalized": self._finalized,
                 "frames_queued": self._frames_queued,
                 "frames_encoded": self._frames_encoded,
                 "dropped_frames": self._dropped_frames,
+                "queue_overflow_count": self._queue_overflow_count,
                 "timestamp_adjustments": self._timestamp_adjustments,
                 "bytes_written": self._bytes_written,
                 "duration_seconds": round(duration, 3),
                 "width": self._width,
                 "height": self._height,
+                "fps": self.fps,
+                "codec": VIDEO_CODEC,
+                "pixel_format": VIDEO_PIXEL_FORMAT,
+                "container": VIDEO_CONTAINER,
                 "overflowed": self._overflowed,
                 "error": self._error,
+                "first_received_monotonic_ns": self._first_received_monotonic_ns,
+                "last_received_monotonic_ns": self._last_received_monotonic_ns,
             }
 
     def clear(self) -> None:
@@ -306,6 +326,7 @@ class LiveVideoRecorder:
         self._frames_queued = 0
         self._frames_encoded = 0
         self._dropped_frames = 0
+        self._queue_overflow_count = 0
         self._timestamp_adjustments = 0
         self._bytes_written = 0
         self._first_pts_seconds = None
@@ -313,6 +334,8 @@ class LiveVideoRecorder:
         self._width = 0
         self._height = 0
         self._overflowed = False
+        self._first_received_monotonic_ns = None
+        self._last_received_monotonic_ns = None
 
 
 def validate_video_bytes(data: bytes) -> tuple[int, str]:

@@ -5,6 +5,16 @@ from collections.abc import MutableMapping
 from datetime import UTC, datetime
 
 from services.job_interview_constants import MAX_ANSWER_SECONDS
+from services.live_recording_manifest import (
+    create_capture_manifest,
+    mark_manifest_finalized,
+    mark_manifest_started,
+    monotonic_now_ns,
+    safe_load_capture_manifest,
+    update_audio_manifest,
+    update_video_manifest,
+    utc_now_iso,
+)
 from services.live_webcam_audio import LiveAudioRecorder
 from services.live_webcam_video import LiveVideoRecorder
 
@@ -12,6 +22,8 @@ RECORDING_CONSENT = "live_webcam_recording_consent"
 RECORDING_CONSENT_AT = "live_webcam_recording_consent_at"
 RECORDING_POLICY_VERSION = "live-recording-v1"
 RECORDING_ID = "live_webcam_recording_id"
+RECORDING_MANIFEST = "live_webcam_recording_manifest"
+RECORDING_MANIFEST_RECORDING_ID = "live_webcam_recording_manifest_recording_id"
 VIDEO_RECORDER = "live_webcam_video_recorder"
 PENDING_MEDIA_IDS = "live_webcam_pending_media_ids"
 MEDIA_STATUS = "live_webcam_media_status"
@@ -38,6 +50,8 @@ LIVE_INTERVIEW_STATE_KEYS = (
     RECORDING_CONSENT,
     RECORDING_CONSENT_AT,
     RECORDING_ID,
+    RECORDING_MANIFEST,
+    RECORDING_MANIFEST_RECORDING_ID,
     RECORDER,
     VIDEO_RECORDER,
     PENDING_MEDIA_IDS,
@@ -62,6 +76,8 @@ def initialize_live_interview_state(state: MutableMapping) -> None:
     state.setdefault(RECORDING_CONSENT, False)
     state.setdefault(RECORDING_CONSENT_AT, None)
     state.setdefault(RECORDING_ID, None)
+    state.setdefault(RECORDING_MANIFEST, None)
+    state.setdefault(RECORDING_MANIFEST_RECORDING_ID, None)
     state.setdefault(RECORDING_ACTIVE, False)
     state.setdefault(RECORDING_QUESTION, None)
     state.setdefault(ANSWER_STARTED_AT, None)
@@ -123,11 +139,70 @@ def prepare_for_question(state: MutableMapping, question_number: int) -> None:
     state[SUBMITTED_FINGERPRINT] = None
 
 
+def ensure_capture_manifest(
+    state: MutableMapping,
+    *,
+    interview_id: int | str | None,
+    recording_id: int | str | None,
+    policy_version: str = RECORDING_POLICY_VERSION,
+) -> dict | None:
+    if interview_id is None or recording_id is None:
+        return None
+    recording_key = str(recording_id)
+    existing = safe_load_capture_manifest(state.get(RECORDING_MANIFEST))
+    existing_key = state.get(RECORDING_MANIFEST_RECORDING_ID)
+    if existing is not None and str(existing_key or "") == recording_key:
+        return existing
+    manifest = create_capture_manifest(
+        recording_id=recording_key,
+        interview_session_id=str(interview_id),
+        policy_version=policy_version,
+        started_monotonic_ns=monotonic_now_ns(),
+        started_utc=utc_now_iso(),
+    )
+    state[RECORDING_MANIFEST] = manifest
+    state[RECORDING_MANIFEST_RECORDING_ID] = recording_key
+    return manifest
+
+
+def get_capture_manifest(state: MutableMapping) -> dict | None:
+    return safe_load_capture_manifest(state.get(RECORDING_MANIFEST))
+
+
+def set_capture_manifest(state: MutableMapping, manifest: dict | None) -> dict | None:
+    state[RECORDING_MANIFEST] = safe_load_capture_manifest(manifest) if manifest is not None else None
+    return state[RECORDING_MANIFEST]
+
+
+def update_capture_manifest_for_recorders(
+    state: MutableMapping,
+    *,
+    audio_status: str | None = None,
+    video_status: str | None = None,
+    finalize: bool = False,
+) -> dict | None:
+    manifest = get_capture_manifest(state)
+    if manifest is None:
+        return None
+    manifest = mark_manifest_started(manifest)
+    audio_snapshot = get_recorder(state).snapshot()
+    video_snapshot = get_video_recorder(state).snapshot()
+    manifest = update_audio_manifest(manifest, audio_snapshot, status=audio_status)
+    manifest = update_video_manifest(manifest, video_snapshot, status=video_status)
+    if finalize:
+        manifest = mark_manifest_finalized(manifest, ended_monotonic_ns=monotonic_now_ns(), ended_utc=utc_now_iso())
+    state[RECORDING_MANIFEST] = manifest
+    return manifest
+
+
 def start_recording(
     state: MutableMapping, question_number: int, *, record_video: bool = False
 ) -> None:
     reset_answer_state(state)
     clear_transcript(state)
+    interview_id = state.get(ACTIVE_INTERVIEW_ID)
+    recording_id = state.get(RECORDING_ID)
+    ensure_capture_manifest(state, interview_id=interview_id, recording_id=recording_id)
     recorder = get_recorder(state)
     recorder.set_enabled(True)
     get_video_recorder(state).set_enabled(bool(record_video))
@@ -135,12 +210,18 @@ def start_recording(
     state[RECORDING_QUESTION] = int(question_number)
     state[ANSWER_STARTED_AT] = datetime.now(UTC).replace(tzinfo=None).isoformat()
     state[INTERVIEW_ERROR] = None
+    update_capture_manifest_for_recorders(
+        state,
+        audio_status="capturing",
+        video_status="capturing" if record_video else "not_started",
+    )
 
 
 def stop_recording(state: MutableMapping) -> None:
     get_recorder(state).set_enabled(False)
     get_video_recorder(state).set_enabled(False)
     state[RECORDING_ACTIVE] = False
+    update_capture_manifest_for_recorders(state, audio_status="stopped", video_status="stopped")
 
 
 def set_transcript(state: MutableMapping, question_number: int, text: str) -> None:
@@ -226,6 +307,8 @@ def clear_interview_state(state: MutableMapping) -> None:
     state[RECORDING_CONSENT] = False
     state[RECORDING_CONSENT_AT] = None
     state[RECORDING_ID] = None
+    state[RECORDING_MANIFEST] = None
+    state[RECORDING_MANIFEST_RECORDING_ID] = None
     state[SUBMITTED_FINGERPRINT] = None
     state[TTS_COUNTER] = 0
     state[INTERVIEW_ERROR] = None
