@@ -15,7 +15,7 @@ os.environ.setdefault("FAISS_OPT_LEVEL", "generic")
 
 _UNSET = object()
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def _is_unset(value: Any) -> bool:
@@ -192,7 +192,7 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.llm_provider = _resolve(self.llm_provider, "LLM_PROVIDER", str, "auto")
-        self.llm_model = _resolve(self.llm_model, "LLM_MODEL", str, "groq/compound")
+        self.llm_model = _resolve(self.llm_model, "LLM_MODEL", str, DEFAULT_GEMINI_MODEL)
         self.ai_provider_mode = _resolve(self.ai_provider_mode, "AI_PROVIDER_MODE", str, "auto")
         self.ai_primary_provider = _resolve(self.ai_primary_provider, "AI_PRIMARY_PROVIDER", str, "")
         self.ai_fallback_enabled = _resolve_bool(
@@ -280,7 +280,7 @@ class Settings:
             self.provider_priority,
             "PROVIDER_PRIORITY",
             str,
-            "groq,gemini,ollama,mistral",
+            "gemini,groq,ollama",
         )
 
         self.max_resume_chars = _resolve(self.max_resume_chars, "MAX_RESUME_CHARS", int, 8000)

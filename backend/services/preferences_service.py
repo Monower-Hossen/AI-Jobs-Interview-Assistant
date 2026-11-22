@@ -16,7 +16,7 @@ MAX_LIST_ITEMS = 40
 MAX_ITEM_LENGTH = 160
 INTERVIEW_TYPES = ("Full Interview", "Technical", "Behavioral", "HR", "Mixed")
 DIFFICULTIES = ("easy", "medium", "hard")
-PROVIDERS = ("auto", "groq", "gemini", "mistral", "ollama")
+PROVIDERS = ("auto", "gemini", "groq", "ollama")
 LEARNING_FORMATS = ("mixed", "articles", "videos", "practice")
 DEFAULT_NOTIFICATION_PREFERENCES: dict[str, bool] = {
     "interview_reminders": True,
