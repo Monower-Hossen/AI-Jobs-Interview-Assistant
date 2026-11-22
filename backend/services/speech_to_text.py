@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.settings import settings
+from services.resource_monitor import acquire_heavy_task
 from utils.file_utils import is_audio_file
 
 _ALLOWED_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
@@ -46,6 +47,8 @@ class SpeechToText:
 
         model_size = model_size or settings.whisper_model
         device = device or settings.whisper_device
+        if not bool(getattr(settings, "allow_cuda_inference", False)):
+            device = "cpu"
         compute_type = "int8" if device == "cpu" else "float16"
 
         config_key = (model_size, device, compute_type)
@@ -72,8 +75,6 @@ class SpeechToText:
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        self._load_model(model_size, device)
-
         converted_path: str | None = None
         audio_input = audio_path
         if not is_audio_file(audio_path):
@@ -81,13 +82,15 @@ class SpeechToText:
             audio_input = converted_path
 
         try:
-            segments, info = self._model.transcribe(
-                audio_input,
-                language=language,
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 500},
-            )
+            with acquire_heavy_task("whisper_transcription"):
+                self._load_model(model_size, device)
+                segments, info = self._model.transcribe(
+                    audio_input,
+                    language=language,
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 500},
+                )
 
             text_parts = []
             segment_list = []
