@@ -197,8 +197,71 @@ def error_state(message: str, detail: str = "") -> None:
 def loading_slot(height: int = 240):
     slot = st.container()
     with slot.skeleton(height=height):
-        st.caption("Loading…")
+        st.caption("Loading�?�")
     return slot
+
+
+def render_resource_status_sidebar(key_prefix: str = "resource") -> None:
+    """Render lightweight cached resource status in sidebar. Never crashes UI."""
+    try:
+        from config.settings import settings
+        from services.resource_monitor import (
+            format_resource_status,
+            get_active_heavy_tasks,
+            get_resource_snapshot,
+        )
+    except Exception:
+        return
+
+    if not bool(getattr(settings, "resource_monitor_enabled", True)):
+        return
+
+    try:
+        snapshot = get_resource_snapshot()
+    except Exception:
+        st.sidebar.caption("Resource monitor unavailable.")
+        return
+
+    with st.sidebar.expander("System resources", expanded=False):
+        st.caption(format_resource_status(snapshot))
+        if snapshot.system_ram_available_mb is not None:
+            if snapshot.memory_pressure == "critical":
+                st.error(
+                    f"Low memory: {snapshot.system_ram_available_mb:.0f} MB available. "
+                    "Heavy tasks may be blocked.",
+                    icon=":material/warning:",
+                )
+            elif snapshot.memory_pressure == "low":
+                st.warning(
+                    f"Memory pressure: {snapshot.system_ram_available_mb:.0f} MB available.",
+                    icon=":material/memory:",
+                )
+        if snapshot.process_rss_mb is not None:
+            st.caption(f"App RSS: {snapshot.process_rss_mb:.0f} MB")
+        if snapshot.gpu_available:
+            st.caption(
+                f"GPU: {snapshot.gpu_name or 'NVIDIA'} | "
+                f"VRAM free {snapshot.gpu_free_vram_mb:.0f}/{snapshot.gpu_total_vram_mb:.0f} MB"
+            )
+        else:
+            st.caption("GPU metrics unavailable; CPU/RAM monitoring still active.")
+
+        active = get_active_heavy_tasks()
+        busy = [name.replace('_', ' ') for name, count in active.items() if count > 0]
+        if busy:
+            st.caption(f"Busy: {', '.join(busy)}")
+
+        if st.button(
+            "Refresh resource status",
+            key=f"{key_prefix}_refresh",
+            icon=":material/refresh:",
+            width="stretch",
+        ):
+            try:
+                get_resource_snapshot(force=True)
+            except Exception:
+                pass
+            st.rerun()
 
 
 def success_toast(message: str) -> None:

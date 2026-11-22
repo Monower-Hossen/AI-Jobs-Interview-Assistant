@@ -85,6 +85,7 @@ from services.live_webcam_state import (
     stream_status,
 )
 from services.llm_service import get_provider_status
+from services.resource_monitor import ResourceBusyError, check_heavy_task_allowed
 
 from frontend.shared.components import (
     empty_state,
@@ -336,6 +337,8 @@ def _finalize_answer_media(
     video_bytes = b""
     try:
         video_bytes = video_recorder.finalize()
+    except ResourceBusyError as exc:
+        set_media_status(st.session_state, "failed", str(exc))
     except Exception as exc:
         set_media_status(st.session_state, "failed", str(exc))
 
@@ -401,6 +404,8 @@ def _finalize_answer_media(
                 )
             else:
                 set_media_status(st.session_state, "failed", "No playable media was captured.")
+        except ResourceBusyError as exc:
+            set_media_status(st.session_state, "failed", str(exc))
         except LiveInterviewError as exc:
             set_media_status(st.session_state, "failed", str(exc))
     else:
@@ -956,6 +961,9 @@ def _render_active(user_id: int, session_token: str) -> None:
     if not consent:
         error_state("Consent is not active. Exit the interview before changing consent.")
 
+    can_start, start_reason = check_heavy_task_allowed("whisper_transcription")
+    if not can_start and not recording:
+        st.warning(start_reason or "Speech transcription is temporarily unavailable.")
     start_col, stop_col, discard_col = st.columns([1, 1, 1])
     if start_col.button(
         "Start answer",
@@ -963,7 +971,7 @@ def _render_active(user_id: int, session_token: str) -> None:
         icon=":material/mic:",
         width="stretch",
         key="_live_webcam_start_answer",
-        disabled=recording or remaining <= 0 or not microphone_ready or not consent,
+        disabled=recording or remaining <= 0 or not microphone_ready or not consent or not can_start,
     ):
         start_recording(
             st.session_state,
