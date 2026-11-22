@@ -599,8 +599,8 @@ class TestMultiProvider:
         ):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr(settings, "llm_provider", "auto")
+        monkeypatch.setattr(settings, "ai_primary_provider", "")
         monkeypatch.setattr(settings, "gemini_api_key", "fake-gemini-key")
-        monkeypatch.setattr(settings, "mistral_api_key", "fake-mistral-key")
         monkeypatch.setattr(settings, "groq_api_key", "fake-groq-key")
         monkeypatch.setattr(settings, "enable_ollama", False)
         monkeypatch.setattr(settings, "provider_priority", "groq,gemini,mistral")
@@ -609,7 +609,8 @@ class TestMultiProvider:
 
         service = LLMService()
         names = [p.get_provider_name() for p in service.providers]
-        assert names == ["groq", "gemini", "mistral"]
+        assert names == ["groq", "gemini"]
+        assert "mistral" not in names
 
     def test_provider_chain_forced(self, monkeypatch):
         from config.settings import settings
@@ -623,8 +624,8 @@ class TestMultiProvider:
         ):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr(settings, "llm_provider", "groq")
+        monkeypatch.setattr(settings, "ai_primary_provider", "")
         monkeypatch.setattr(settings, "gemini_api_key", "fake-gemini-key")
-        monkeypatch.setattr(settings, "mistral_api_key", "fake-mistral-key")
         monkeypatch.setattr(settings, "groq_api_key", "fake-groq-key")
         monkeypatch.setattr(settings, "enable_ollama", False)
         monkeypatch.setattr(settings, "provider_priority", "groq,gemini,mistral")
@@ -633,7 +634,8 @@ class TestMultiProvider:
 
         service = LLMService()
         names = [p.get_provider_name() for p in service.providers]
-        assert names == ["groq", "gemini", "mistral"]
+        assert names == ["groq", "gemini"]
+        assert "mistral" not in names
 
     def test_routing_config_prefers_primary_and_manual_disables_fallback(self, monkeypatch):
         from config.settings import settings
@@ -668,7 +670,6 @@ class TestMultiProvider:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr(settings, "llm_provider", "auto")
         monkeypatch.setattr(settings, "gemini_api_key", "")
-        monkeypatch.setattr(settings, "mistral_api_key", "")
         monkeypatch.setattr(settings, "groq_api_key", "")
         monkeypatch.setattr(settings, "enable_ollama", False)
 

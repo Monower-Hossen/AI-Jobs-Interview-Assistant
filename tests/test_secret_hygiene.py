@@ -91,8 +91,54 @@ def test_env_example_declares_required_provider_keys() -> None:
         "GROQ_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
-        "MISTRAL_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
     ]:
         assert re.search(rf"^{re.escape(name)}=", text, re.MULTILINE), name
+
+
+IGNORED_SOURCE_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "node_modules",
+    "venv",
+    ".venv",
+    "env",
+    "ENV",
+    "data",
+    "reports",
+    "storage",
+    "models",
+}
+BINARY_SOURCE_SUFFIXES = {
+    ".pyc", ".pyo", ".so", ".dll", ".pyd", ".db", ".sqlite", ".sqlite3", ".png", ".jpg",
+    ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".avi", ".mov",
+    ".pdf", ".zip", ".gz", ".faiss", ".npy", ".npz", ".pkl", ".coverage",
+}
+MISTRAL_SECRET_RE = re.compile(
+    r"^\s*(?:export\s+)?(?P<name>MISTRAL_API_KEY|MISTRAL_API_TOKEN)\s*=\s*(?P<value>.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def test_no_hardcoded_mistral_api_credentials_in_source_config() -> None:
+    offenders: list[str] = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or path.name == ".env":
+            continue
+        relative = path.relative_to(ROOT)
+        if any(part in IGNORED_SOURCE_DIRS for part in relative.parts):
+            continue
+        if path.suffix.lower() in BINARY_SOURCE_SUFFIXES:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for match in MISTRAL_SECRET_RE.finditer(text):
+            value = match.group("value").strip().strip('"').strip("'")
+            if SAFE_PLACEHOLDER_RE.match(value):
+                continue
+            line = text.count("\n", 0, match.start()) + 1
+            offenders.append(f"{relative.as_posix()}:{line}:{match.group('name')}")
+    assert not offenders, f"Hardcoded Mistral credentials found at: {offenders}"
