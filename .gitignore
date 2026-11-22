@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-
+.streamlit/
 .kilo
 .mypy_cache/
 .ruff_cache/
@@ -14,12 +14,12 @@ __pycache__/
 venv/
 env/
 ENV/
-.env.example
 
 # Environment variables
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Database
 *.db
@@ -32,8 +32,10 @@ data/*.sqlite3
 *-wal
 *-shm
 
-# Vector store
+# Vector store and caches
 data/vector_store/
+data/embedding_cache/
+data/reports/
 *.faiss
 *.pkl
 
@@ -96,3 +98,6 @@ build/
 # Backup files
 *.bak
 *.backup
+
+reports/
+
