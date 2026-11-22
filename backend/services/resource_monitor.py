@@ -364,18 +364,30 @@ def check_heavy_task_allowed(
     return True, None
 
 
-@contextmanager
-def acquire_heavy_task(task: str, *, snapshot: ResourceSnapshot | None = None) -> Iterator[None]:
+def try_begin_heavy_task(task: str, *, snapshot: ResourceSnapshot | None = None) -> tuple[bool, str | None]:
+    """Non-context-manager lease for long-running work. Caller must end it."""
     allowed, reason = check_heavy_task_allowed(task, snapshot=snapshot)
     if not allowed:
-        raise ResourceBusyError(reason or "System is busy. Please try again.")
+        return False, reason
     with _STATE_LOCK:
         _ACTIVE[task] = _ACTIVE.get(task, 0) + 1
+    return True, None
+
+
+def end_heavy_task(task: str) -> None:
+    with _STATE_LOCK:
+        _ACTIVE[task] = max(0, _ACTIVE.get(task, 0) - 1)
+
+
+@contextmanager
+def acquire_heavy_task(task: str, *, snapshot: ResourceSnapshot | None = None) -> Iterator[None]:
+    allowed, reason = try_begin_heavy_task(task, snapshot=snapshot)
+    if not allowed:
+        raise ResourceBusyError(reason or "System is busy. Please try again.")
     try:
         yield
     finally:
-        with _STATE_LOCK:
-            _ACTIVE[task] = max(0, _ACTIVE.get(task, 0) - 1)
+        end_heavy_task(task)
 
 
 def format_resource_status(snapshot: ResourceSnapshot | None = None) -> str:
