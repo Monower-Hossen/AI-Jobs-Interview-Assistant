@@ -57,13 +57,27 @@ def main() -> None:
     )
 
     if "db_initialized" not in st.session_state:
-        init_database()
-        st.session_state.db_initialized = True
+        try:
+            init_database()
+            st.session_state.db_initialized = True
+        except Exception:
+            logging.getLogger(__name__).exception("db.init_failed")
+            st.error("Database initialization failed. Please check logs and try again.", icon=":material/error:")
+            st.stop()
 
     if "user_session_id" not in st.session_state:
         st.session_state.user_session_id = str(uuid.uuid4())[:8]
 
-    account = _current_account()
+    try:
+        account = _current_account()
+    except Exception:
+        logging.getLogger(__name__).exception("auth.resolve_account_failed")
+        st.session_state.pop("account", None)
+        st.session_state.pop("user_id", None)
+        st.session_state.pop("must_change_password", None)
+        account = None
+        st.warning("Session validation failed. Please sign in again.", icon=":material/warning:")
+
     if st.session_state.pop("auth_notice", None):
         st.warning(
             "Your account is no longer active. Contact the administrator.",
