@@ -15,6 +15,7 @@ from database.models import InterviewMedia, InterviewSession, UserSession
 from pydub import AudioSegment
 from services.auth_service import require_owned_session_token
 from services.job_interview_constants import MAX_UPLOAD_BYTES
+from services.resource_monitor import ResourceBusyError
 from services.speech_to_text import transcribe_audio
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,8 @@ def transcribe_media(media_id: int, *, actor_user_id: int, session_token: str) -
 
     try:
         result = transcribe_audio(source_path)
+    except ResourceBusyError as exc:
+        raise MediaError(str(exc)) from exc
     except Exception as exc:
         logger.warning("Media transcription failed: %s", exc)
         raise MediaError(

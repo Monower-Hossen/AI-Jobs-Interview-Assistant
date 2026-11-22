@@ -11,6 +11,7 @@ from typing import Any
 
 import av
 from config.settings import settings
+from services.resource_monitor import acquire_heavy_task
 
 VIDEO_CODEC = "libx264"
 VIDEO_PIXEL_FORMAT = "yuv420p"
@@ -192,35 +193,36 @@ class LiveVideoRecorder:
                 return
 
     def finalize(self) -> bytes:
-        with self._lock:
-            if self._finalized:
-                return self._buffer.getvalue()
-            self._enabled = False
-            if not self._stop_requested:
-                self._stop_requested = True
-                self._queue.put(_STOP)
-            worker = self._worker
-        if worker is not None and worker.is_alive():
-            worker.join(timeout=10)
-        with self._lock:
-            if not self._finalized:
-                try:
-                    if self._stream is not None and self._container is not None:
-                        for packet in self._stream.encode():
-                            self._container.mux(packet)
-                except Exception as exc:
-                    self._error = f"Could not finalize the video recording: {exc}"
-                finally:
-                    if self._container is not None:
-                        try:
-                            self._container.close()
-                        except Exception as exc:
-                            self._error = self._error or f"Could not close the video file: {exc}"
-                        self._container = None
-                    self._stream = None
-                self._finalized = True
-                self._bytes_written = self._buffer.tell()
-            return self._buffer.getvalue() if self._error is None else b""
+        with acquire_heavy_task("video_processing"):
+            with self._lock:
+                if self._finalized:
+                    return self._buffer.getvalue()
+                self._enabled = False
+                if not self._stop_requested:
+                    self._stop_requested = True
+                    self._queue.put(_STOP)
+                worker = self._worker
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=10)
+            with self._lock:
+                if not self._finalized:
+                    try:
+                        if self._stream is not None and self._container is not None:
+                            for packet in self._stream.encode():
+                                self._container.mux(packet)
+                    except Exception as exc:
+                        self._error = f"Could not finalize the video recording: {exc}"
+                    finally:
+                        if self._container is not None:
+                            try:
+                                self._container.close()
+                            except Exception as exc:
+                                self._error = self._error or f"Could not close the video file: {exc}"
+                            self._container = None
+                        self._stream = None
+                    self._finalized = True
+                    self._bytes_written = self._buffer.tell()
+                return self._buffer.getvalue() if self._error is None else b""
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

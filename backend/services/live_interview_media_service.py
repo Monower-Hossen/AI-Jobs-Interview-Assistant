@@ -21,6 +21,7 @@ from database.models import (
     UserSession,
 )
 from services.auth_service import log_event, require_admin, require_owned_session_token
+from services.resource_monitor import acquire_heavy_task
 
 AUDIO_MIME = "audio/wav"
 VIDEO_MIME = "video/mp4"
@@ -274,7 +275,8 @@ def save_live_media(
             and path.exists()
         ):
             return int(existing.id)
-        _atomic_write(path, data)
+        with acquire_heavy_task("video_processing"):
+            _atomic_write(path, data)
         payload = dict(metadata or {})
         payload.setdefault("consent_policy_version", record.consent_policy_version)
         payload.setdefault("captured_at", _now().isoformat())
@@ -309,6 +311,14 @@ def save_live_media(
             existing.deleted_at = None
             media = existing
         db.flush()
+        log_event(
+            "live_media_saved",
+            message=(
+                f"media_id={int(media.id)} interview_id={int(interview_id)} "
+                f"type={media_type} bytes={len(data)}"
+            ),
+            user_id=int(user_id),
+        )
         return int(media.id)
 
 
