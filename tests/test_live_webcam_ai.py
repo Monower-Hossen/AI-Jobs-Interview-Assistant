@@ -12,7 +12,10 @@ import numpy as np
 import pytest
 from services.job_interview_service import JobInterviewError
 from services.live_interview_state import (
+    MEDIA_STATUS,
+    PENDING_MEDIA_IDS,
     RECORDING_ACTIVE,
+    RECORDING_ID,
     SUBMITTED_FINGERPRINT,
     TRANSCRIPT,
     TRANSCRIPT_QUESTION,
@@ -56,6 +59,8 @@ from services.live_webcam_state import (
     stream_error,
     stream_requested,
 )
+
+from frontend.user import live_webcam_interview as live_page
 
 
 def _chunk(*, sample_rate: int = 16_000, channels: int = 1, samples: int = 8) -> AudioChunk:
@@ -423,3 +428,185 @@ def test_connection_failure_recorded_only_after_grace_period():
         )
         is False
     )
+
+
+class _PartialAudioRecorder:
+    def __init__(self):
+        self.cleared = False
+
+    def snapshot(self):
+        return {
+            "sample_rate": 16_000,
+            "channels": 1,
+            "sample_format": "s16",
+            "chunk_count": 4,
+            "dropped_chunks": 0,
+        }
+
+    def clear(self) -> None:
+        self.cleared = True
+
+
+class _PartialVideoRecorder:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.cleared = False
+
+    def snapshot(self):
+        return {
+            "codec": "h264",
+            "container": "mp4",
+            "fps": 30,
+            "width": 64,
+            "height": 64,
+            "frames_encoded": 4,
+            "dropped_frames": 0,
+            "timestamp_adjustments": 0,
+            "overflowed": False,
+            "duration_seconds": 0.133,
+        }
+
+    def finalize(self) -> bytes:
+        return self.data
+
+    def clear(self) -> None:
+        self.cleared = True
+
+
+def _prepare_partial_media_page(
+    monkeypatch,
+    *,
+    audio_bytes: bytes,
+    video_bytes: bytes,
+    audio_save_ok: bool,
+    video_save_ok: bool,
+):
+    state = {}
+    initialize_live_interview_state(state)
+    state[RECORDING_ID] = 7
+    audio_recorder = _PartialAudioRecorder()
+    video_recorder = _PartialVideoRecorder(video_bytes)
+    saves: list[dict] = []
+    next_id = [100]
+    monkeypatch.setattr(live_page, "st", SimpleNamespace(session_state=state))
+    monkeypatch.setattr(live_page, "get_recorder", lambda _: audio_recorder)
+    monkeypatch.setattr(live_page, "get_video_recorder", lambda _: video_recorder)
+    monkeypatch.setattr(live_page, "recording_consent_granted", lambda _: True)
+    monkeypatch.setattr(live_page, "ensure_capture_manifest", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        live_page, "update_capture_manifest_for_recorders", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(live_page, "capture_audio_bytes", lambda _: audio_bytes)
+    monkeypatch.setattr(live_page, "transcribe_audio_bytes", lambda _: "answer")
+
+    def _save(**kwargs):
+        saves.append(kwargs)
+        if kwargs["media_type"] == "audio" and not audio_save_ok:
+            raise LiveInterviewError("audio save failed")
+        if kwargs["media_type"] == "video" and not video_save_ok:
+            raise LiveInterviewError("video save failed")
+        next_id[0] += 1
+        return next_id[0]
+
+    monkeypatch.setattr(live_page, "save_live_media", _save)
+    return state, saves, audio_recorder, video_recorder
+
+
+@pytest.mark.parametrize(
+    (
+        "audio_bytes",
+        "video_bytes",
+        "audio_save_ok",
+        "video_save_ok",
+        "expected_status",
+        "expected_pending",
+    ),
+    [
+        (b"audio", b"video", True, True, "saved", [101, 102]),
+        (b"audio", b"video", True, False, "partial", [101]),
+        (b"audio", b"video", False, True, "partial", [101]),
+        (b"audio", b"video", False, False, "failed", []),
+        (b"", b"video", True, True, "partial", [101]),
+    ],
+)
+def test_partial_media_saves_are_tracked_and_status_is_specific(
+    monkeypatch,
+    audio_bytes,
+    video_bytes,
+    audio_save_ok,
+    video_save_ok,
+    expected_status,
+    expected_pending,
+) -> None:
+    state, saves, audio_recorder, video_recorder = _prepare_partial_media_page(
+        monkeypatch,
+        audio_bytes=audio_bytes,
+        video_bytes=video_bytes,
+        audio_save_ok=audio_save_ok,
+        video_save_ok=video_save_ok,
+    )
+
+    transcript, transcript_error = live_page._finalize_answer_media(
+        interview_id=9,
+        question_number=1,
+        user_id=3,
+        session_token="token",
+    )
+
+    assert state[MEDIA_STATUS] == expected_status
+    assert state[PENDING_MEDIA_IDS] == expected_pending
+    assert transcript == ("answer" if audio_bytes else None)
+    assert transcript_error is None
+    assert audio_recorder.cleared is True
+    assert video_recorder.cleared is True
+    assert bool(video_bytes) == any(item["media_type"] == "video" for item in saves)
+
+
+def test_failed_video_finalization_is_never_saved(monkeypatch) -> None:
+    state, saves, _, _ = _prepare_partial_media_page(
+        monkeypatch,
+        audio_bytes=b"audio",
+        video_bytes=b"",
+        audio_save_ok=True,
+        video_save_ok=True,
+    )
+
+    live_page._finalize_answer_media(
+        interview_id=9,
+        question_number=1,
+        user_id=3,
+        session_token="token",
+    )
+
+    assert [item["media_type"] for item in saves] == ["audio"]
+    assert state[MEDIA_STATUS] == "partial"
+    assert state[PENDING_MEDIA_IDS] == [101]
+
+
+def test_delete_pending_media_keeps_failed_deletions_for_retry(monkeypatch) -> None:
+    state = {}
+    initialize_live_interview_state(state)
+    state[PENDING_MEDIA_IDS] = [11, 12]
+    monkeypatch.setattr(live_page, "st", SimpleNamespace(session_state=state))
+    calls: list[int] = []
+    should_fail = [True]
+
+    def _delete(media_id, **kwargs):
+        calls.append(int(media_id))
+        if should_fail[0] and int(media_id) == 12:
+            raise LiveInterviewError("Unauthorized")
+
+    monkeypatch.setattr(live_page, "delete_live_media", _delete)
+
+    live_page._delete_pending_media(3, "token")
+
+    assert calls == [11, 12]
+    assert state[PENDING_MEDIA_IDS] == [12]
+    assert state[MEDIA_STATUS] == "delete_failed"
+    assert "Unauthorized" in (state.get(live_page.MEDIA_ERROR) or "")
+
+    should_fail[0] = False
+    live_page._delete_pending_media(3, "token")
+
+    assert calls == [11, 12, 12]
+    assert state[PENDING_MEDIA_IDS] == []
