@@ -45,6 +45,7 @@ from services.llm_service import (
 )
 
 from frontend.shared.auth_ui import show_auth_page, sign_out
+from frontend.shared.components import render_resource_status_sidebar
 
 
 def main() -> None:
@@ -180,6 +181,7 @@ def _render_sidebar(account) -> None:
             sign_out()
 
     _render_provider_sidebar("sidebar_provider_health")
+    render_resource_status_sidebar("sidebar_resource_status")
 
 
 def _render_user_sidebar(account) -> None:
@@ -200,6 +202,7 @@ def _render_user_sidebar(account) -> None:
 
     st.sidebar.caption("Workspace navigation")
     _render_provider_sidebar("user_sidebar_provider_health")
+    render_resource_status_sidebar("user_sidebar_resource_status")
 
 
 def _admin_pages() -> dict:
