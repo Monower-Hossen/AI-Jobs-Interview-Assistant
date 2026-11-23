@@ -343,7 +343,7 @@ def test_ai_avatar_page_renders_setup(monkeypatch) -> None:
     at.run()
     assert not list(at.exception)
     assert len(at.selectbox) >= 1
-    assert any("Start AI avatar interview" in str(button.label) for button in at.button)
+    assert any("Start Mock Interview" in str(button.label) for button in at.button)
 
 
 def test_ai_avatar_page_renders_active_speaking_state(monkeypatch) -> None:

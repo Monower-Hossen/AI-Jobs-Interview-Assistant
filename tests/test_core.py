@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 import pytest
@@ -437,14 +438,27 @@ class TestRAGComponents:
         assert len(chunks) > 0
         assert all(isinstance(c, TextChunk) for c in chunks)
 
-    def test_embedding_model_singleton(self):
-        from rag.embeddings import get_embedding_model
+    def test_embedding_model_singleton(self, monkeypatch):
+        from rag import embeddings
 
-        model1 = get_embedding_model()
-        model2 = get_embedding_model()
+        class FakeSentenceTransformer:
+            def __init__(self, model_name, device=None):
+                self.model_name = model_name
 
-        assert model1 is model2  # Singleton
-        assert model1.dimension > 0
+            def get_embedding_dimension(self):
+                return 3
+
+        monkeypatch.setattr(embeddings, "acquire_heavy_task", lambda *a, **k: nullcontext())
+        monkeypatch.setattr(embeddings, "SentenceTransformer", FakeSentenceTransformer)
+        embeddings.reset_embedding_model()
+        try:
+            model1 = embeddings.get_embedding_model()
+            model2 = embeddings.get_embedding_model()
+
+            assert model1 is model2  # Singleton
+            assert model1.dimension > 0
+        finally:
+            embeddings.reset_embedding_model()
 
     def test_reset_embedding_model_clears_singleton(self, monkeypatch):
         from config.settings import settings
@@ -458,10 +472,11 @@ class TestRAGComponents:
                 return 3
 
         original_model = settings.embedding_model
+        monkeypatch.setattr(embeddings, "acquire_heavy_task", lambda *a, **k: nullcontext())
         monkeypatch.setattr(embeddings, "SentenceTransformer", FakeSentenceTransformer)
+        embeddings.reset_embedding_model()
         try:
             settings.embedding_model = "model-a"
-            embeddings.reset_embedding_model()
             first = embeddings.get_embedding_model()
             assert first._model.model_name == "model-a"
 

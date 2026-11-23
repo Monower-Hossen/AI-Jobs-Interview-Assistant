@@ -1,5 +1,5 @@
 import ast
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -247,7 +247,7 @@ class TestUserDashboardWiring:
 
         assert not app.exception, [str(error.value) for error in app.exception]
         labels = [button.label for button in app.button]
-        assert "Analyze resume" in labels
+        assert "Resume analysis" in labels
         assert "Start interview" in labels
 
 
@@ -474,3 +474,389 @@ class TestUserDashboardServices:
             require_owned_user_id(dashboard_db["user2"], dashboard_db["user1"])
         with pytest.raises(ValueError, match="workspace"):
             require_owned_session_id(dashboard_db["session2"], dashboard_db["user1"])
+
+
+def _seed_interview_record(
+    session_id: int,
+    *,
+    status: str = "completed",
+    score: float | None = None,
+    created: datetime | None = None,
+    plan_7_day=None,
+) -> int:
+    from database import InterviewSession, get_db_context
+
+    created_at = created or datetime.now()
+    with get_db_context() as db:
+        row = InterviewSession(
+            session_id=session_id,
+            interview_type="Technical",
+            difficulty="medium",
+            status=status,
+            overall_score=score,
+            technical_score=score,
+            communication_score=score,
+            problem_solving_score=score,
+            duration_seconds=1800,
+            completed_at=created_at if status == "completed" else None,
+            created_at=created_at,
+            improvement_plan_7_day=plan_7_day,
+        )
+        db.add(row)
+        db.flush()
+        return int(row.id)
+
+
+def _seed_question(interview_id: int, *, confidence: float = 4.0) -> None:
+    from database import InterviewQuestion, get_db_context
+
+    with get_db_context() as db:
+        db.add(
+            InterviewQuestion(
+                interview_session_id=interview_id,
+                question_number=1,
+                question_text="Explain caching trade-offs",
+                category="technical",
+                overall_score=5.0,
+                technical_accuracy=6.0,
+                communication=5.0,
+                confidence=confidence,
+                problem_solving=5.0,
+                structure=5.0,
+                evaluated_at=datetime.now(),
+            )
+        )
+
+
+def _seed_learning(session_id: int, *, completed: int = 1) -> None:
+    from database import Assessment, LearningRoadmap, LearningTask, get_db_context
+
+    with get_db_context() as db:
+        roadmap = LearningRoadmap(
+            session_id=session_id,
+            title="Focus plan",
+            focus_skills=["Python"],
+            created_at=datetime.now(),
+        )
+        db.add(roadmap)
+        db.flush()
+        for index in range(2):
+            db.add(
+                LearningTask(
+                    roadmap_id=roadmap.id,
+                    order_index=index,
+                    title=f"Task {index + 1}",
+                    status="completed" if index < completed else "pending",
+                )
+            )
+        db.add(
+            Assessment(
+                session_id=session_id,
+                topic="Technical",
+                score=7.0,
+                created_at=datetime.now(),
+            )
+        )
+
+
+def _seed_notification(session_id: int, user_id: int, event_key: str) -> None:
+    from services.learning_service import create_notification
+
+    create_notification(
+        session_id=session_id,
+        actor_user_id=user_id,
+        title="Study task due",
+        message="Review your study plan.",
+        notification_type="task_reminder",
+        severity="warning",
+        target_page="learning_center",
+        event_key=event_key,
+    )
+
+
+def _seed_match(session_id: int, missing_skills: list[str]) -> None:
+    from database import JobDescription, ResumeAnalysis, ResumeJobMatch, get_db_context
+
+    with get_db_context() as db:
+        resume = ResumeAnalysis(
+            session_id=session_id,
+            file_name="resume.txt",
+            raw_text="Python engineer",
+            overall_resume_score=70.0,
+            created_at=datetime.now(),
+        )
+        job = JobDescription(
+            session_id=session_id,
+            title="Platform Engineer",
+            raw_text="Build reliable platforms",
+            created_at=datetime.now(),
+        )
+        db.add_all([resume, job])
+        db.flush()
+        db.add(
+            ResumeJobMatch(
+                resume_analysis_id=resume.id,
+                job_description_id=job.id,
+                missing_skills=missing_skills,
+                skill_gaps=missing_skills,
+                overall_match=60.0,
+                created_at=datetime.now(),
+            )
+        )
+
+
+def _add_dashboard_admin() -> dict:
+    from database import User, UserSession, get_db_context
+    from services import auth_service as auth
+
+    with get_db_context() as db:
+        admin = User(
+            email="dash-admin@example.com",
+            username="dash-admin",
+            full_name="Dashboard Admin",
+            password_hash=auth.hash_password("Pass1234"),
+            role="admin",
+            account_status="active",
+            is_active=True,
+            is_verified=True,
+            must_change_password=False,
+        )
+        db.add(admin)
+        db.flush()
+        workspace = UserSession(session_id="admin-dash-token", user_id=admin.id, label="admin")
+        db.add(workspace)
+        db.flush()
+        return {
+            "user_id": int(admin.id),
+            "session_id": int(workspace.id),
+            "token": "admin-dash-token",
+        }
+
+
+class TestStage3DashboardEnhancements:
+    def test_sections_are_data_backed_and_owner_scoped(self, dashboard_db):
+        from services.dashboard_service import get_dashboard_snapshot
+
+        base = datetime.now()
+        _seed_interview_record(
+            dashboard_db["session1"], score=7.0, created=base - timedelta(days=2)
+        )
+        high_id = _seed_interview_record(
+            dashboard_db["session1"],
+            score=8.0,
+            created=base - timedelta(days=1),
+            plan_7_day=["Practice system design"],
+        )
+        _seed_question(high_id)
+        _seed_interview_record(dashboard_db["session1"], status="in_progress", created=base)
+        _seed_interview_record(dashboard_db["session2"], score=3.0, created=base)
+        _seed_learning(dashboard_db["session1"], completed=1)
+        _seed_notification(dashboard_db["session1"], dashboard_db["user1"], "dash-notice-1")
+        _seed_match(dashboard_db["session1"], ["Kubernetes"])
+
+        first = get_dashboard_snapshot(
+            dashboard_db["session1"],
+            dashboard_db["user1"],
+            session_token="user-1",
+            actor_role="user",
+        )
+        second = get_dashboard_snapshot(
+            dashboard_db["session2"],
+            dashboard_db["user2"],
+            session_token="user-2",
+            actor_role="user",
+        )
+
+        assert first.interview_history_summary["total_sessions"] == 3
+        assert first.interview_history_summary["completed_sessions"] == 2
+        assert first.interview_history_summary["in_progress_sessions"] == 1
+        assert first.interview_history_summary["latest_score"] is None
+        assert len(first.interview_history_summary["recent_completed"]) == 2
+        assert first.performance_comparison["available"] is True
+        assert first.performance_comparison["latest_score"] == 8.0
+        assert first.performance_comparison["previous_score"] == 7.0
+        assert first.performance_comparison["difference"] == 1.0
+        assert first.performance_comparison["direction"] == "improved"
+        assert first.learning_progress == {
+            "completed_tasks": 1,
+            "total_tasks": 2,
+            "completion_percent": 50.0,
+            "assessment_count": 1,
+            "summary": "1 of 2 study tasks complete.",
+        }
+        assert "Kubernetes" in first.skill_gaps["missing_skills"]
+        assert "confidence" in first.skill_gaps["weak_areas"]
+        assert first.improvement_plan["available"] is True
+        assert "Practice system design" in first.improvement_plan["seven_day"]
+        assert first.notification_unread_count == 1
+        assert first.recent_notifications[0]["Title"] == "Study task due"
+
+        assert second.interview_history_summary["total_sessions"] == 1
+        assert second.performance_comparison["available"] is False
+        assert second.learning_progress["total_tasks"] == 0
+        assert second.learning_progress["completion_percent"] is None
+        assert second.skill_gaps["has_data"] is False
+        assert second.improvement_plan["available"] is False
+        assert second.recent_notifications == []
+        assert second.notification_unread_count == 0
+        assert second.upcoming_invitations == []
+
+    def test_comparison_handles_zero_previous_and_missing_scores(self, dashboard_db):
+        from services.dashboard_service import get_dashboard_snapshot
+
+        base = datetime.now()
+        _seed_interview_record(
+            dashboard_db["session1"], score=0.0, created=base - timedelta(days=2)
+        )
+        _seed_interview_record(
+            dashboard_db["session1"], score=6.0, created=base - timedelta(days=1)
+        )
+        first = get_dashboard_snapshot(
+            dashboard_db["session1"], dashboard_db["user1"], session_token="user-1"
+        )
+        comparison = first.performance_comparison
+        assert comparison["available"] is True
+        assert comparison["previous_score"] == 0.0
+        assert comparison["percent_change"] is None
+        assert comparison["difference"] == 6.0
+
+        _seed_interview_record(dashboard_db["session2"], status="in_progress", created=base)
+        second = get_dashboard_snapshot(
+            dashboard_db["session2"], dashboard_db["user2"], session_token="user-2"
+        )
+        assert second.performance_comparison["available"] is False
+        assert second.interview_history_summary["latest_score"] is None
+
+    def test_learning_and_skill_sections_have_honest_empty_states(self, dashboard_db):
+        from services.dashboard_service import get_dashboard_snapshot
+
+        snapshot = get_dashboard_snapshot(
+            dashboard_db["session1"], dashboard_db["user1"], session_token="user-1"
+        )
+        assert snapshot.learning_progress["total_tasks"] == 0
+        assert snapshot.learning_progress["completion_percent"] is None
+        assert snapshot.learning_progress["summary"] == "No study plan tasks saved yet."
+        assert snapshot.skill_gaps["has_data"] is False
+        assert snapshot.skill_gaps["items"] == []
+        assert snapshot.improvement_plan["available"] is False
+        assert snapshot.recent_notifications == []
+
+    def test_pending_invitations_are_candidate_only_and_admin_hidden(self, dashboard_db):
+        from services import live_interview_coordination_service as coordination
+        from services.dashboard_service import get_dashboard_snapshot
+
+        admin = _add_dashboard_admin()
+        room = coordination.create_invitation(
+            admin_user_id=admin["user_id"],
+            session_token=admin["token"],
+            candidate_user_id=dashboard_db["user1"],
+            title="Pending backend interview",
+        )
+        assert room["status"] == "invited"
+
+        candidate = get_dashboard_snapshot(
+            dashboard_db["session1"],
+            dashboard_db["user1"],
+            session_token="user-1",
+            actor_role="user",
+        )
+        other = get_dashboard_snapshot(
+            dashboard_db["session2"],
+            dashboard_db["user2"],
+            session_token="user-2",
+            actor_role="user",
+        )
+        admin_snapshot = get_dashboard_snapshot(
+            admin["session_id"],
+            admin["user_id"],
+            session_token=admin["token"],
+            actor_role="admin",
+        )
+
+        assert len(candidate.upcoming_invitations) == 1
+        assert candidate.upcoming_invitations[0]["Title"] == "Pending backend interview"
+        assert candidate.upcoming_invitations[0]["Status"] == "invited"
+        assert other.upcoming_invitations == []
+        assert admin_snapshot.upcoming_invitations == []
+
+    def test_terminal_and_expired_invitations_are_excluded(self, dashboard_db):
+        from database import InterviewCallRoom, get_db_context
+        from services import live_interview_coordination_service as coordination
+        from services.dashboard_service import get_dashboard_snapshot
+
+        admin = _add_dashboard_admin()
+        declined = coordination.create_invitation(
+            admin_user_id=admin["user_id"],
+            session_token=admin["token"],
+            candidate_user_id=dashboard_db["user1"],
+            title="Declined interview",
+        )
+        coordination.decline_invitation(
+            room_id=declined["room_id"],
+            user_id=dashboard_db["user1"],
+            session_token="user-1",
+        )
+        expired = coordination.create_invitation(
+            admin_user_id=admin["user_id"],
+            session_token=admin["token"],
+            candidate_user_id=dashboard_db["user1"],
+            title="Expired interview",
+        )
+        with get_db_context() as db:
+            row = db.query(InterviewCallRoom).filter(
+                InterviewCallRoom.room_id == expired["room_id"]
+            ).first()
+            row.expires_at = datetime.now() - timedelta(days=1)
+
+        snapshot = get_dashboard_snapshot(
+            dashboard_db["session1"],
+            dashboard_db["user1"],
+            session_token="user-1",
+            actor_role="user",
+        )
+        assert snapshot.upcoming_invitations == []
+
+    def test_dashboard_sections_render_and_quick_actions_remain(self, dashboard_db, monkeypatch):
+        from services import knowledge_base
+        from services.auth_service import get_account
+        from streamlit.testing.v1 import AppTest
+
+        _seed_interview_record(dashboard_db["session1"], score=8.0)
+        _seed_notification(dashboard_db["session1"], dashboard_db["user1"], "dash-ui-notice")
+        monkeypatch.setattr(
+            knowledge_base, "get_knowledge_base", lambda *args, **kwargs: _StubKnowledgeBase()
+        )
+        account = get_account(dashboard_db["user1"])
+        assert account is not None
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=30)
+        app.session_state["db_initialized"] = True
+        app.session_state["user_id"] = dashboard_db["user1"]
+        app.session_state["user_session_id"] = "user-1"
+        app.session_state["account"] = account
+        app.session_state["must_change_password"] = False
+        app.run()
+        assert not app.exception, [str(error.value) for error in app.exception]
+
+        app.switch_page("frontend/user/dashboard.py").run()
+        assert not app.exception, [str(error.value) for error in app.exception]
+        headings = [node.value for node in app.subheader]
+        for title in (
+            "Performance overview",
+            "Continue preparation",
+            "Recent activity",
+            "AI recommendations",
+            "Upcoming activities",
+        ):
+            assert title in headings, (title, headings)
+        labels = [button.label for button in app.button]
+        for label in (
+            "Start interview",
+            "Continue mock interview",
+            "Resume analysis",
+            "Job preparation",
+            "Continue learning",
+            "Open history",
+            "Open invitations",
+            "Open notifications",
+        ):
+            assert label in labels, (label, labels)

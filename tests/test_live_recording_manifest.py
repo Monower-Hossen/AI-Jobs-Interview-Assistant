@@ -3,9 +3,11 @@
 import json
 
 import pytest
+from services import live_interview_state as state_module
 from services.live_interview_state import (
     RECORDING_MANIFEST,
     RECORDING_MANIFEST_RECORDING_ID,
+    VIDEO_ERROR,
     ensure_capture_manifest,
     get_capture_manifest,
     initialize_live_interview_state,
@@ -26,6 +28,76 @@ from services.live_recording_manifest import (
     update_video_manifest,
     validate_capture_manifest,
 )
+
+
+class _FakeAudioRecorder:
+    def __init__(self) -> None:
+        self.enabled = False
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+
+    def clear(self) -> None:
+        self.enabled = False
+
+    def snapshot(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "chunk_count": 0,
+            "dropped_chunks": 0,
+            "duration_seconds": 0.0,
+            "sample_rate": 16000,
+            "channels": 1,
+            "sample_format": "s16",
+            "byte_count": 0,
+            "overflowed": False,
+            "capture_error": None,
+            "first_received_monotonic_ns": None,
+            "last_received_monotonic_ns": None,
+        }
+
+
+class _FakeVideoRecorder:
+    def __init__(self, error: str | None = None) -> None:
+        self.enabled = False
+        self.error = error
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+
+    def clear(self) -> None:
+        self.enabled = False
+
+    def snapshot(self) -> dict:
+        healthy = self.enabled and self.error is None
+        return {
+            "enabled": self.enabled,
+            "worker_alive": healthy,
+            "resource_lease_held": healthy,
+            "error": self.error,
+            "frames_encoded": 0,
+            "dropped_frames": 0,
+            "queue_overflow_count": 0,
+            "timestamp_adjustments": 0,
+            "duration_seconds": 0.0,
+            "width": 640,
+            "height": 480,
+            "fps": 30,
+            "bytes_written": 0,
+            "codec": "libx264",
+            "pixel_format": "yuv420p",
+            "container": "mp4",
+            "overflowed": False,
+            "first_received_monotonic_ns": None,
+            "last_received_monotonic_ns": None,
+        }
+
+
+def _patch_fake_recorders(monkeypatch, video: _FakeVideoRecorder) -> _FakeAudioRecorder:
+    audio = _FakeAudioRecorder()
+    monkeypatch.setattr(state_module, "get_recorder", lambda state: audio)
+    monkeypatch.setattr(state_module, "get_video_recorder", lambda state: video)
+    return audio
 
 
 def test_manifest_contract_valid_roundtrip() -> None:
@@ -153,7 +225,32 @@ def test_interview_state_manifest_initialized_once_and_survives_rerun_like_reini
     assert state[RECORDING_MANIFEST_RECORDING_ID] == "77"
 
 
-def test_interview_state_manifest_updates_from_recorders() -> None:
+def test_interview_state_manifest_updates_from_recorders(monkeypatch) -> None:
+    video = _FakeVideoRecorder()
+    _patch_fake_recorders(monkeypatch, video)
+    state: dict = {}
+    initialize_live_interview_state(state)
+    state["live_webcam_active_interview_id"] = 5
+    state["live_webcam_recording_id"] = 6
+    ensure_capture_manifest(state, interview_id=5, recording_id=6)
+    start_recording(state, 1, record_video=True)
+    assert video.enabled is True
+    manifest = get_capture_manifest(state)
+    assert manifest is not None
+    assert manifest["audio"]["status"] == "capturing"
+    assert manifest["video"]["status"] == "capturing"
+    stop_recording(state)
+    assert video.enabled is False
+    manifest = update_capture_manifest_for_recorders(state, finalize=True)
+    assert manifest is not None
+    assert manifest["audio"]["status"] in {"stopped", "finalized", "capturing", "partial"}
+    assert manifest["timing"]["recording_ended_monotonic_ns"] is not None
+
+
+def test_interview_state_manifest_marks_resource_denied_video_failed(monkeypatch) -> None:
+    denial = "Available system memory is critically low."
+    video = _FakeVideoRecorder(error=denial)
+    _patch_fake_recorders(monkeypatch, video)
     state: dict = {}
     initialize_live_interview_state(state)
     state["live_webcam_active_interview_id"] = 5
@@ -162,10 +259,6 @@ def test_interview_state_manifest_updates_from_recorders() -> None:
     start_recording(state, 1, record_video=True)
     manifest = get_capture_manifest(state)
     assert manifest is not None
-    assert manifest["audio"]["status"] == "capturing"
-    assert manifest["video"]["status"] == "capturing"
-    stop_recording(state)
-    manifest = update_capture_manifest_for_recorders(state, finalize=True)
-    assert manifest is not None
-    assert manifest["audio"]["status"] in {"stopped", "finalized", "capturing", "partial"}
-    assert manifest["timing"]["recording_ended_monotonic_ns"] is not None
+    assert manifest["video"]["status"] == "failed"
+    assert manifest["video"]["capture_error"] == denial
+    assert state[VIDEO_ERROR] == denial
