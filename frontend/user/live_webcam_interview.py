@@ -90,6 +90,23 @@ from services.live_recorder_lifecycle import (
     set_stream_statuses,
 )
 from services.live_recording_manifest import CAPTURE_MANIFEST_KEY
+from services.live_session_lifecycle import (
+    LIVE_SESSION_PAGE,
+    LiveSessionOwner,
+    bind_live_session,
+    bump_stream_generation,
+    can_control_live_recording,
+    clear_disconnect_finalization,
+    current_live_owner,
+    get_stream_generation,
+    identity_matches_live_session,
+    is_session_heartbeat_stale,
+    mark_session_heartbeat,
+    mark_stream_connected,
+    mark_stream_disconnected,
+    pop_disconnect_finalization,
+    request_disconnect_finalization,
+)
 from services.live_webcam_state import (
     CAMERA,
     CONSENT_CAMERA,
@@ -225,6 +242,85 @@ def _identity() -> tuple[int | None, str | None]:
     return user_id, token
 
 
+def _stream_callbacks(kind: str):
+    state = st.session_state
+    owner = current_live_owner(state)
+    generation = get_stream_generation(state, kind)
+    if generation == 0:
+        generation = bump_stream_generation(state, kind, owner=owner)
+
+    def _is_current() -> bool:
+        return can_control_live_recording(
+            state,
+            owner,
+            answer_id=current_answer_id(state),
+            kind=kind,
+            stream_generation=generation,
+        )
+
+    def _on_ended() -> None:
+        if not _is_current():
+            return
+        answer_id = current_answer_id(state)
+        reason = f"The {kind} WebRTC track ended."
+        mark_stream_disconnected(
+            state,
+            kind,
+            owner=owner,
+            answer_id=answer_id,
+            stream_generation=generation,
+            reason=reason,
+        )
+        request_disconnect_finalization(
+            state,
+            owner=owner,
+            answer_id=answer_id,
+            reason=reason,
+            stream_generation=generation,
+        )
+
+    return generation, _is_current, _on_ended
+
+
+def _sync_stream_context(kind: str, context, owner, answer_id, generation) -> None:
+    state = st.session_state
+    playing = bool(context.state.playing)
+    signalling = bool(context.state.signalling)
+    previous_playing_key = (
+        CAMERA_PLAYING if kind == CAMERA else MICROPHONE_PLAYING
+    )
+    was_playing = bool(state.get(previous_playing_key))
+    if was_playing and not playing and stream_requested(state, kind):
+        reason = f"The {kind} WebRTC connection was lost."
+        mark_stream_disconnected(
+            state,
+            kind,
+            owner=owner,
+            answer_id=answer_id,
+            stream_generation=generation,
+            reason=reason,
+        )
+        request_disconnect_finalization(
+            state,
+            owner=owner,
+            answer_id=answer_id,
+            reason=reason,
+            stream_generation=generation,
+        )
+    if playing and not was_playing:
+        mark_stream_connected(
+            state,
+            kind,
+            owner=owner,
+            stream_generation=generation,
+        )
+        clear_disconnect_finalization(state, owner=owner, answer_id=answer_id)
+    state[previous_playing_key] = playing
+    record_connection_failure(
+        state, kind, playing=playing, signalling=signalling
+    )
+
+
 def _render_stream_status(kind: str, context) -> None:
     playing = bool(context.state.playing)
     signalling = bool(context.state.signalling)
@@ -275,35 +371,52 @@ def _render_controls(kind: str, label: str) -> None:
 
 
 def _render_video_stream(requested: bool) -> None:
-    video_recorder = get_video_recorder(st.session_state)
+    state = st.session_state
+    video_recorder = get_video_recorder(state)
+    owner = current_live_owner(state)
+    answer_id = current_answer_id(state)
+    generation, is_current, on_ended = _stream_callbacks(CAMERA)
     context = webrtc_streamer(
         key="live_webcam_camera_streamer",
         mode=WebRtcMode.SENDRECV,
         media_stream_constraints={"video": True, "audio": False},
-        video_processor_factory=lambda: RecordingVideoProcessor(video_recorder),
+        video_processor_factory=lambda: RecordingVideoProcessor(
+            video_recorder,
+            is_current=is_current,
+            on_ended=on_ended,
+        ),
         desired_playing_state=requested,
         media_toggle_controls=False,
         sendback_video=True,
         sendback_audio=False,
     )
-    st.session_state[CAMERA_PLAYING] = bool(context.state.playing)
+    _sync_stream_context(CAMERA, context, owner, answer_id, generation)
     _render_stream_status(CAMERA, context)
 
 
 def _render_audio_stream(requested: bool) -> None:
-    event_queue = get_audio_event_queue(st.session_state)
-    recorder = get_recorder(st.session_state)
+    state = st.session_state
+    event_queue = get_audio_event_queue(state)
+    recorder = get_recorder(state)
+    owner = current_live_owner(state)
+    answer_id = current_answer_id(state)
+    generation, is_current, on_ended = _stream_callbacks(MICROPHONE)
     context = webrtc_streamer(
         key="live_webcam_microphone_streamer",
         mode=WebRtcMode.SENDRECV,
         media_stream_constraints={"video": False, "audio": True},
-        audio_processor_factory=lambda: RecordingAudioProcessor(event_queue, recorder),
+        audio_processor_factory=lambda: RecordingAudioProcessor(
+            event_queue,
+            recorder,
+            is_current=is_current,
+            on_ended=on_ended,
+        ),
         desired_playing_state=requested,
         media_toggle_controls=False,
         sendback_video=False,
         sendback_audio=False,
     )
-    st.session_state[MICROPHONE_PLAYING] = bool(context.state.playing)
+    _sync_stream_context(MICROPHONE, context, owner, answer_id, generation)
     _render_stream_status(MICROPHONE, context)
     _render_audio_activity()
 
@@ -357,12 +470,15 @@ def _finalize_answer_media(
     user_id: int,
     session_token: str,
     answer_id: str | None = None,
+    owner: LiveSessionOwner | None = None,
 ) -> tuple[str | None, str | None]:
     state = st.session_state
     recorder = get_recorder(state)
     video_recorder = get_video_recorder(state)
     current_id = current_answer_id(state)
     stale_question = state.get(RECORDING_QUESTION)
+    if owner is not None and not can_control_live_recording(state, owner):
+        return None, "This live session is no longer active; its media was not finalized."
     if answer_id is not None and not is_current_answer(
         state, answer_id=answer_id, question_number=question_number
     ):
@@ -1052,8 +1168,39 @@ def _perform_abandon(interview_id: int, user_id: int, session_token: str) -> Non
     st.rerun()
 
 
+def _handle_disconnect_recovery(user_id: int, session_token: str) -> bool:
+    state = st.session_state
+    owner = current_live_owner(state)
+    request = pop_disconnect_finalization(state, owner)
+    if request is None or current_answer_id(state) != request.answer_id:
+        return False
+    if request.question_number is None:
+        report_recorder_failure(
+            state,
+            request.reason or "The live stream disconnected.",
+            answer_id=request.answer_id,
+        )
+        clear_capture_data(state)
+        return True
+    stop_recording(state)
+    text, error = _finalize_answer_media(
+        interview_id=int(state.get(ACTIVE_INTERVIEW_ID) or 0),
+        question_number=int(request.question_number),
+        user_id=user_id,
+        session_token=session_token,
+        answer_id=request.answer_id,
+        owner=owner,
+    )
+    if text:
+        set_transcript(state, int(request.question_number), text)
+    if error:
+        set_transcript_error(state, error)
+    return True
+
+
 def _render_active(user_id: int, session_token: str) -> None:
     interview_id = int(st.session_state[ACTIVE_INTERVIEW_ID])
+    _handle_disconnect_recovery(user_id, session_token)
     try:
         state = get_live_interview_state(
             interview_id, user_id=user_id, session_token=session_token
@@ -1307,14 +1454,30 @@ def show_live_webcam_interview_page() -> None:
     st.session_state.setdefault(ABANDON_DECISION, None)
     st.session_state.setdefault(DELETE_MEDIA_ON_ABANDON, False)
     user_id, token = _identity()
+    from frontend.shared.live_session_cleanup import (
+        teardown_for_auth,
+        teardown_for_owner_change,
+    )
+
+    previous_owner = current_live_owner(st.session_state)
+    if not user_id or not token:
+        teardown_for_auth(reason="Authentication is unavailable for live capture.")
+        error_state("Please sign in to use the live webcam interview.")
+        st.stop()
+    if previous_owner and not identity_matches_live_session(
+        st.session_state, user_id=user_id, session_token=token
+    ):
+        teardown_for_owner_change(previous_owner)
+    elif previous_owner and is_session_heartbeat_stale(st.session_state):
+        teardown_for_auth(reason="The live session heartbeat expired.")
+    bind_live_session(st.session_state, user_id=user_id, session_token=token)
+    mark_session_heartbeat(st.session_state)
     page_header(
         "AI live webcam interview",
         "Take a job-grounded adaptive interview with a live camera preview, spoken answers, and optional local recording storage.",
         icon=":material/videocam:",
     )
-    if not user_id or not token:
-        error_state("Please sign in to use the live webcam interview.")
-        st.stop()
+    st.session_state[LIVE_SESSION_PAGE] = "live_webcam"
     if WEBRTC_IMPORT_ERROR:
         detail = WEBRTC_IMPORT_DIAGNOSTIC or (
             f"Live webcam import failed: {WEBRTC_IMPORT_ERROR_TYPE or 'ImportError'}: {WEBRTC_IMPORT_ERROR}"
