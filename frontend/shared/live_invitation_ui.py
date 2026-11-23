@@ -1,31 +1,18 @@
-import json
 from datetime import date, datetime
 from typing import Any
 
 import streamlit as st
+from services import live_call_media_service as media
 from services import live_call_service as calls
 from services.live_interview_coordination_service import (
+    attach_media_session,
+    get_media_config,
     receive_signals,
-    send_signal,
+    release_media_session,
     signal_poll_seconds,
 )
 
-_SIGNAL_OPTIONS = [
-    calls.SIGNAL_OFFER,
-    calls.SIGNAL_ANSWER,
-    calls.SIGNAL_ICE_CANDIDATE,
-    calls.SIGNAL_ICE_GATHERING_COMPLETE,
-    calls.SIGNAL_HANGUP,
-    calls.SIGNAL_PING,
-]
-_DEFAULT_PAYLOADS = {
-    calls.SIGNAL_OFFER: '{"type": "offer", "sdp": ""}',
-    calls.SIGNAL_ANSWER: '{"type": "answer", "sdp": ""}',
-    calls.SIGNAL_ICE_CANDIDATE: '{"candidate": "", "sdp_mid": "", "sdp_mline_index": 0}',
-    calls.SIGNAL_ICE_GATHERING_COMPLETE: "{}",
-    calls.SIGNAL_HANGUP: '{"reason": "User left the live interview"}',
-    calls.SIGNAL_PING: '{"nonce": ""}',
-}
+from frontend.shared.live_call_component import render_live_call
 
 
 def _identity() -> tuple[int, str]:
@@ -76,6 +63,9 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
     columns = st.columns(4)
     changed = False
 
+    def run(action, success_message: str) -> bool:
+        return _run_action(action, success_message, room_id)
+
     if role == calls.ROLE_CANDIDATE and status == calls.INVITED:
         if columns[0].button(
             "Accept",
@@ -84,7 +74,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             key=f"_live_call_accept_{room_id}",
             type="primary",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: accept_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -98,7 +88,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             width="stretch",
             key=f"_live_call_decline_{room_id}",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: decline_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -122,7 +112,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             width="stretch",
             key=f"_live_call_cancel_{room_id}",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: cancel_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -139,7 +129,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             key=f"_live_call_start_{room_id}",
             type="primary",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: start_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -155,7 +145,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             key=f"_live_call_complete_{room_id}",
             type="primary",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: complete_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -169,7 +159,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             width="stretch",
             key=f"_live_call_interrupt_{room_id}",
         ):
-            changed = _run_action(
+            changed = run(
                 lambda: interrupt_invitation(
                     room_id=room_id,
                     user_id=user_id,
@@ -184,7 +174,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
         width="stretch",
         key=f"_live_call_leave_{room_id}",
     ):
-        changed = _run_action(
+        changed = run(
             lambda: leave_invitation(
                 room_id=room_id,
                 user_id=user_id,
@@ -195,7 +185,8 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
     return changed
 
 
-def _run_action(action, success_message: str) -> bool:
+def _run_action(action, success_message: str, room_id: str) -> bool:
+    _, session_token = _identity()
     try:
         action()
     except calls.LiveCallError as exc:
@@ -205,6 +196,14 @@ def _run_action(action, success_message: str) -> bool:
         st.error("The live call action could not be completed.", icon=":material/error:")
         st.caption(str(exc)[:200])
         return False
+    try:
+        release_media_session(
+            room_id=room_id,
+            user_id=int(st.session_state["user_id"]),
+            session_token=session_token,
+        )
+    except Exception:
+        pass
     st.success(success_message, icon=":material/check_circle:")
     return True
 
@@ -234,123 +233,57 @@ def _poll_signals_fragment(room_id: str, user_id: int, session_token: str) -> No
     _poll_signals(room_id, user_id, session_token)
 
 
-def _manual_poll(room_id: str, user_id: int, session_token: str) -> None:
-    try:
-        messages = receive_signals(
-            room_id=room_id,
-            user_id=user_id,
-            session_token=session_token,
-            limit=50,
-        )
-    except calls.LiveCallError as exc:
-        st.error(str(exc), icon=":material/error:")
-        return
-    except Exception as exc:
-        st.error("Signals could not be checked.", icon=":material/error:")
-        st.caption(str(exc)[:200])
-        return
-    key = _signal_key(room_id)
-    history = list(st.session_state.get(key) or [])
-    history.extend(messages)
-    st.session_state[key] = history[-50:]
-    st.caption(f"Received {len(messages)} signaling message(s).")
-
-
-def render_signaling_panel(room: dict[str, Any]) -> None:
+def render_live_call_panel(room: dict[str, Any]) -> None:
     status = str(room["status"])
     if status not in {calls.ACCEPTED, calls.IN_PROGRESS}:
         return
     room_id = str(room["room_id"])
-    role = str(room.get("role") or "")
-    recipient = calls.ROLE_CANDIDATE if role == calls.ROLE_ADMIN else calls.ROLE_ADMIN
     user_id, session_token = _identity()
     key = _signal_key(room_id)
     if key not in st.session_state:
         st.session_state[key] = []
 
-    with st.expander("WebRTC signaling", expanded=False):
-        st.caption(
-            "This panel exchanges signaling JSON only. Audio, video, camera, and microphone "
-            "media are not relayed or verified here."
-        )
-        payload_key = f"_live_call_payload_{room_id}"
-        kind_key = f"_live_call_kind_{room_id}"
-        if payload_key not in st.session_state:
-            st.session_state[payload_key] = _DEFAULT_PAYLOADS[calls.SIGNAL_OFFER]
-        kind = st.selectbox(
-            "Signal type",
-            options=_SIGNAL_OPTIONS,
-            key=kind_key,
-        )
-        if st.button(
-            "Use template",
-            icon=":material/code:",
-            width="stretch",
-            key=f"_live_call_template_{room_id}",
-        ):
-            st.session_state[payload_key] = _DEFAULT_PAYLOADS[str(kind)]
-            st.rerun()
-        st.text_area(
-            "Signaling payload (JSON)",
-            key=payload_key,
-            height=140,
-        )
-        send_columns = st.columns(2)
-        if send_columns[0].button(
-            "Send signal",
-            icon=":material/send:",
-            width="stretch",
-            type="primary",
-            key=f"_live_call_send_{room_id}",
-        ):
-            raw = str(st.session_state.get(payload_key) or "")
-            try:
-                payload = json.loads(raw)
-            except (TypeError, ValueError):
-                st.error("Enter a valid JSON object.", icon=":material/error:")
-                return
-            if not isinstance(payload, dict):
-                st.error("The signaling payload must be a JSON object.", icon=":material/error:")
-                return
-            try:
-                send_signal(
-                    room_id=room_id,
-                    user_id=user_id,
-                    session_token=session_token,
-                    signal_type=str(kind),
-                    recipient_role=recipient,
-                    payload=payload,
-                )
-            except calls.LiveCallError as exc:
-                st.error(str(exc), icon=":material/error:")
-            except Exception as exc:
-                st.error("The signal could not be queued.", icon=":material/error:")
-                st.caption(str(exc)[:200])
-            else:
-                st.success("Signal queued for the other participant.", icon=":material/check_circle:")
-        if send_columns[1].button(
-            "Check for signals",
-            icon=":material/sync:",
-            width="stretch",
-            key=f"_live_call_receive_{room_id}",
-        ):
-            _manual_poll(room_id, user_id, session_token)
+    st.markdown("#### Live call")
+    st.caption(
+        "Join to request real camera and microphone access. SDP and ICE are exchanged "
+        "through the authenticated invitation queue; media flows through the browser peer connection."
+    )
+    _poll_signals_fragment(room_id, user_id, session_token)
 
-        _poll_signals_fragment(room_id, user_id, session_token)
-        messages = list(st.session_state.get(key) or [])
-        if messages:
-            st.caption(f"Signals held in this browser: {len(messages)}")
-            st.json([_jsonable(message) for message in messages])
-            if st.button(
-                "Clear held signals",
-                icon=":material/delete:",
-                width="stretch",
-                key=f"_live_call_clear_{room_id}",
-            ):
-                st.session_state[key] = []
-                st.rerun()
-        else:
-            st.caption("No signaling messages held in this browser.")
+    enabled = str(room.get("participant_status") or "") != calls.PARTICIPANT_LEFT
+    try:
+        media_state = attach_media_session(
+            room_id=room_id,
+            user_id=user_id,
+            session_token=session_token,
+        )
+        config = get_media_config(
+            room_id=room_id,
+            user_id=user_id,
+            session_token=session_token,
+        )
+    except calls.LiveCallError as exc:
+        st.error(str(exc), icon=":material/error:")
+        return
+    except media.LiveCallMediaError as exc:
+        st.error(str(exc), icon=":material/error:")
+        st.caption("Only one live media room can use the bounded video slot at a time.")
+        return
+    except Exception as exc:
+        st.error("Live media could not be started.", icon=":material/error:")
+        st.caption(str(exc)[:200])
+        return
+
+    st.caption(f"Room media slot active: {len(media_state.get('roles') or [])} participant role(s).")
+    incoming = [_jsonable(message) for message in list(st.session_state.get(key) or [])]
+    render_live_call(
+        room=room,
+        incoming=incoming,
+        media_config=config,
+        enabled=enabled,
+        user_id=user_id,
+        session_token=session_token,
+    )
 
 
 def render_room(room: dict[str, Any]) -> bool:
@@ -360,5 +293,5 @@ def render_room(room: dict[str, Any]) -> bool:
         st.caption(f"Room: {room_id}")
         render_room_details(room)
         changed = render_action_buttons(room)
-        render_signaling_panel(room)
+        render_live_call_panel(room)
     return changed

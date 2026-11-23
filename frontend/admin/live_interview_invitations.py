@@ -78,7 +78,7 @@ def show_admin_live_interviews() -> None:
     session_token = str(st.session_state.get("user_session_id") or "")
     page_header(
         "Live Interview Invitations",
-        "Invite candidates and coordinate WebRTC signaling. No audio or video media is relayed.",
+        "Invite candidates and run authenticated real-time WebRTC interviews.",
         ":material/videocam:",
     )
     _render_create_form(admin_user_id, session_token)

@@ -15,12 +15,10 @@ def show_user_live_interviews() -> None:
     session_token = str(st.session_state.get("user_session_id") or "")
     page_header(
         "Live Interview Invitations",
-        "Review invitations and exchange WebRTC signaling. No audio or video media is relayed.",
+        "Review invitations and join authenticated real-time WebRTC interviews.",
         ":material/videocam:",
     )
-    st.caption(
-        "Room status reflects invitation coordination only. It does not verify a media connection."
-    )
+    st.caption("Connection status is reported by your browser peer connection after you join.")
 
     section("Your invitations", ":material/list:")
     try:
