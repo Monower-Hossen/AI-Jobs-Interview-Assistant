@@ -1,4 +1,4 @@
 """Interview history page."""
-from frontend.user.history_page import show_history_page
+from frontend.user.unified_history import show_unified_interview_history
 
-show_history_page()
+show_unified_interview_history()
