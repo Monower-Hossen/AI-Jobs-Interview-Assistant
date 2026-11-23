@@ -318,100 +318,129 @@ def _user_pages(account) -> dict:
         "Overview": [
             st.Page(
                 "frontend/user/dashboard.py",
-                title="Overview",
+                title="Dashboard",
                 icon=":material/dashboard:",
                 default=True,
             ),
-            st.Page(
-                "frontend/user/notifications.py",
-                title="Notifications",
-                icon=":material/notifications:",
-                url_path="notifications",
-            ),
-            st.Page(
-                "frontend/user/live_interview_invitations.py",
-                title="Live interview invitations",
-                icon=":material/videocam:",
-                url_path="live-interview-invitations",
-            ),
         ],
-        "Practice": [
+        "Interview Studio": [
             st.Page(
                 "frontend/user/job_interview.py",
-                title="Job interview",
+                title="Job Interview",
                 icon=":material/videocam:",
                 url_path="job-interview",
             ),
             st.Page(
                 "frontend/user/ai_avatar_interview.py",
-                title="AI avatar interview",
+                title="Mock Interview",
+                icon=":material/smart_toy:",
+                url_path="mock_interview",
+            ),
+            st.Page(
+                "frontend/user/ai_avatar_interview.py",
+                title="AI Avatar Interview",
                 icon=":material/smart_toy:",
                 url_path="ai-avatar-interview",
+                visibility="hidden",
             ),
-            st.Page(
-                "frontend/user/mock_interview.py", title="Mock interview", icon=":material/forum:"
-            ),
-            st.Page(
-                "frontend/user/interview_history.py",
-                title="Interview history",
-                icon=":material/history:",
-            ),
-            st.Page(
-                "frontend/user/live_recording_history.py",
-                title="Live recording history",
-                icon=":material/video_file:",
-                url_path="live-recording-history",
-            ),
-            st.Page(
-                "frontend/user/report_page.py",
-                title="Interview reports",
-                icon=":material/assessment:",
-            ),
-        ],
-        "Preparation": [
-            st.Page(
-                "frontend/user/resume_analyzer.py",
-                title="Resume analyzer",
-                icon=":material/description:",
-            ),
-            st.Page("frontend/user/job_page.py", title="Job preparation", icon=":material/work:"),
             st.Page(
                 "frontend/user/live_webcam_interview.py",
-                title="Live webcam interview",
+                title="Live Interview",
                 icon=":material/videocam:",
                 url_path="live-webcam-interview",
             ),
             st.Page(
-                "frontend/user/question_bank.py",
-                title="Question bank",
-                icon=":material/library_books:",
+                "frontend/user/live_interview_invitations.py",
+                title="Invitations",
+                icon=":material/event_available:",
+                url_path="live-interview-invitations",
+            ),
+            st.Page(
+                "frontend/user/mock_interview.py",
+                title="Legacy Mock Interview",
+                icon=":material/forum:",
+                url_path="legacy-mock-interview",
+                visibility="hidden",
             ),
         ],
-        "Insights": [
+        "Career Preparation": [
             st.Page(
-                "frontend/user/analytics.py",
-                title="Performance analytics",
-                icon=":material/analytics:",
+                "frontend/user/resume_analyzer.py",
+                title="Resume Analyzer",
+                icon=":material/description:",
             ),
+            st.Page("frontend/user/job_page.py", title="Job Preparation", icon=":material/work:"),
             st.Page(
-                "frontend/user/coach.py", title="AI interview coach", icon=":material/psychology:"
+                "frontend/user/question_bank.py",
+                title="Question Bank",
+                icon=":material/library_books:",
             ),
             st.Page(
                 "frontend/user/learning_center.py",
-                title="Learning center",
+                title="Learning Center",
                 icon=":material/school:",
             ),
             st.Page(
                 "frontend/user/learning_resources.py",
                 title="Learning roadmap",
                 icon=":material/route:",
+                url_path="learning_resources",
+                visibility="hidden",
             ),
         ],
-        "Account": [
+        "Performance": [
+            st.Page(
+                "frontend/user/interview_history.py",
+                title="Interview History",
+                icon=":material/history:",
+            ),
+            st.Page(
+                "frontend/user/analytics.py",
+                title="Performance Analytics",
+                icon=":material/analytics:",
+            ),
+            st.Page(
+                "frontend/user/report_page.py",
+                title="Interview Reports",
+                icon=":material/assessment:",
+            ),
+            st.Page(
+                "frontend/user/live_recording_history.py",
+                title="Recording History",
+                icon=":material/video_file:",
+                url_path="live-recording-history",
+            ),
+            st.Page(
+                "frontend/user/learning_progress.py",
+                title="Learning Progress",
+                icon=":material/trending_up:",
+                url_path="learning-progress",
+            ),
+        ],
+        "AI Career Coach": [
+            st.Page(
+                "frontend/user/coach.py", title="AI Interview Coach", icon=":material/psychology:"
+            ),
+            st.Page(
+                "frontend/user/improvement_plans.py",
+                title="Improvement Plans",
+                icon=":material/checklist:",
+                url_path="improvement-plans",
+            ),
+        ],
+        "Notifications": [
+            st.Page(
+                "frontend/user/notifications.py",
+                title="Notifications",
+                icon=":material/notifications:",
+                url_path="notifications",
+            ),
+        ],
+        "My Account": [
             st.Page("frontend/user/profile.py", title="Profile", icon=":material/person:"),
             st.Page(
                 "frontend/user/account_settings.py",
-                title="Account settings",
+                title="Account Settings",
                 icon=":material/tune:",
             ),
         ],
