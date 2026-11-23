@@ -12,7 +12,7 @@ from services.auth_service import (
     update_profile,
 )
 
-from frontend.shared.components import page_header, section
+from frontend.shared.components import page_header, section, stop_speech
 
 TRANSIENT_KEYS: tuple[str, ...] = (
     "_ai_provider_health_results",
@@ -101,10 +101,17 @@ TRANSIENT_KEYS: tuple[str, ...] = (
     "user_session_id",
 )
 _TRANSIENT_PREFIXES = (
+    "_ai_avatar_",
+    "_avatar_",
+    "_spoken_text_",
+    "_speech_stopped_",
+    "_live_call_",
+    "_live_invite_",
     "account_learning_",
     "account_notification_",
     "account_preferred_",
     "account_security_",
+    "ai_avatar_",
     "answer_",
     "kb_delete_",
     "learning_note_",
@@ -219,6 +226,25 @@ def sign_out() -> None:
     user_id = st.session_state.get("user_id")
     if user_id:
         log_event("auth.logout", user_id=user_id)
+    try:
+        from frontend.shared.live_session_cleanup import teardown_for_auth
+
+        teardown_for_auth(
+            user_id=int(user_id) if user_id is not None else None,
+            session_token=st.session_state.get("user_session_id")
+            or st.session_state.get("session_token"),
+            reason="The user signed out during live capture.",
+        )
+    except Exception:
+        pass
+    stop_speech("ai_avatar")
+    token = st.session_state.get("user_session_id") or st.session_state.get("session_token")
+    try:
+        from services.auth_service import revoke_session
+
+        revoke_session(str(token or ""), int(user_id) if user_id is not None else None)
+    except Exception:
+        pass
     keys = set(TRANSIENT_KEYS)
     for key in list(st.session_state.keys()):
         if isinstance(key, str) and (

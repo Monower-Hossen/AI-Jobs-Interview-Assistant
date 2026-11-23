@@ -64,6 +64,50 @@ def show_admin_settings() -> None:
                 st.session_state["_admin_provider_health"] = check_provider_health()
             st.rerun()
 
+    with st.expander("Resource Admission", expanded=False):
+        diagnostics = st.session_state.get("_admin_resource_admission_diagnostics")
+        refresh = st.button(
+            "Refresh resource diagnostics",
+            icon=":material/refresh:",
+            width="stretch",
+            key="admin_refresh_resource_diagnostics",
+        )
+        if diagnostics is None or refresh:
+            from services.resource_monitor import get_resource_admission_diagnostics
+
+            try:
+                diagnostics = get_resource_admission_diagnostics()
+                st.session_state["_admin_resource_admission_diagnostics"] = diagnostics
+            except Exception as exc:
+                st.error(f"Resource monitor unavailable: {exc}", icon=":material/error:")
+                diagnostics = None
+        if diagnostics is not None:
+            st.markdown(
+                f"**Active leases:** {diagnostics['active_lease_count']} · "
+                f"**Expired:** {diagnostics['expired_lease_count']} · "
+                f"**Recovered:** {diagnostics['recovered_lease_count']} · "
+                f"**Pressure:** {diagnostics['resource_pressure']}"
+            )
+            st.caption(
+                f"Monitoring available: {'Yes' if diagnostics['monitoring_available'] else 'No'}"
+            )
+            data_table(
+                [
+                    {"Task": task, "Active leases": count}
+                    for task, count in diagnostics["active_leases_by_task"].items()
+                ],
+                "No active resource leases.",
+                "Active leases by task",
+            )
+            data_table(
+                [
+                    {"Reason code": code, "Rejections": count}
+                    for code, count in diagnostics["rejected_admissions"].items()
+                ],
+                "No admissions have been rejected.",
+                "Rejected admissions by reason",
+            )
+
     with st.expander("Database & Storage", expanded=False):
         st.markdown(f"**Database Path:** {settings.database_path}")
         st.markdown(f"**Vector Store Path:** {settings.vector_store_path}")
