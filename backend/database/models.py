@@ -121,6 +121,7 @@ class UserSession(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     last_active = Column(DateTime, default=func.now())
+    revoked_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="sessions")
     documents = relationship(
@@ -857,3 +858,79 @@ class LiveInterviewMedia(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
     recording = relationship("LiveInterviewRecording", back_populates="media")
+
+
+class InterviewCallRoom(Base):
+    __tablename__ = "interview_call_rooms"
+    __table_args__ = (
+        UniqueConstraint("room_id", name="uq_interview_call_room_id"),
+        UniqueConstraint("invite_token_hash", name="uq_interview_call_invite_hash"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    room_id = Column(String(64), nullable=False, index=True)
+    admin_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title = Column(String(200), nullable=True)
+    status = Column(String(30), nullable=False, default="invited", index=True)
+    invite_token_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    accepted_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class InterviewCallParticipant(Base):
+    __tablename__ = "interview_call_participants"
+    __table_args__ = (
+        UniqueConstraint(
+            "room_id", "user_id", name="uq_interview_call_participant_room_user"
+        ),
+        UniqueConstraint("room_id", "role", name="uq_interview_call_participant_room_role"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    room_id = Column(
+        Integer,
+        ForeignKey("interview_call_rooms.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role = Column(String(20), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="invited", index=True)
+    joined_at = Column(DateTime, nullable=True)
+    left_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class InterviewCallSignal(Base):
+    __tablename__ = "interview_call_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    room_id = Column(
+        Integer,
+        ForeignKey("interview_call_rooms.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    recipient_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    signal_type = Column(String(40), nullable=False, index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    consumed_at = Column(DateTime, nullable=True, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now(), index=True)

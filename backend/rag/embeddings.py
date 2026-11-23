@@ -20,7 +20,9 @@ class EmbeddingModel:
 
     def __init__(self):
         if self._model is None:
-            self._load_model()
+            with acquire_heavy_task("embedding_generation"):
+                if self._model is None:
+                    self._load_model()
 
     def _load_model(self):
         device = settings.embedding_device
