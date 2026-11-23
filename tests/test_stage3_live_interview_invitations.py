@@ -301,7 +301,7 @@ def test_candidate_page_renders_invitation_without_exposing_session_token(stage3
     assert room["room_id"] in rendered
     assert "Backend interview" in rendered
     assert stage3_db["candidate_token"] not in rendered
-    assert "No audio or video media is relayed" in rendered
+    assert "real-time WebRTC interviews" in rendered
 
 
 def test_admin_page_renders_invitation_form_and_existing_room(stage3_db, monkeypatch) -> None:
