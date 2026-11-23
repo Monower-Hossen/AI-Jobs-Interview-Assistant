@@ -4,6 +4,7 @@ from typing import Any
 
 from config.settings import settings
 from database import User, get_db_context
+from services import live_call_media_service as media
 from services import live_call_service as calls
 
 
@@ -39,6 +40,18 @@ def _role_for(room, user_id: int) -> str:
     if int(room.candidate_user_id) == int(user_id):
         return calls.ROLE_CANDIDATE
     return "unknown"
+
+
+def _participant_status(db, room, user_id: int) -> str | None:
+    row = (
+        db.query(calls.InterviewCallParticipant)
+        .filter(
+            calls.InterviewCallParticipant.room_id == room.id,
+            calls.InterviewCallParticipant.user_id == int(user_id),
+        )
+        .first()
+    )
+    return str(row.status) if row is not None else None
 
 
 def create_invitation(
@@ -79,7 +92,12 @@ def list_invitations(
             limit=limit,
         )
         parsed_user_id = int(user_id)
-        return [_room_dict(db, room, role=_role_for(room, parsed_user_id)) for room in rooms]
+        summaries: list[dict[str, Any]] = []
+        for room in rooms:
+            summary = _room_dict(db, room, role=_role_for(room, parsed_user_id))
+            summary["participant_status"] = _participant_status(db, room, parsed_user_id)
+            summaries.append(summary)
+        return summaries
 
 
 def get_invitation(
@@ -266,3 +284,54 @@ def signal_poll_seconds() -> int:
     except (TypeError, ValueError):
         return 3
     return max(1, min(value, 30))
+
+
+def get_media_config(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> dict[str, Any]:
+    room = get_invitation(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
+    return media.media_config(room_id=room_id, role=str(room["role"]))
+
+
+def attach_media_session(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> dict[str, Any]:
+    room = get_invitation(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
+    return media.attach_media_session(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+        role=str(room["role"]),
+    )
+
+
+def release_media_session(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> dict[str, Any]:
+    room = get_invitation(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
+    return media.release_media_session(room_id=room_id, role=str(room["role"]))
+
+
+def heartbeat_media_session(*, room_id: str) -> bool:
+    return media.heartbeat_media_session(room_id=room_id)
