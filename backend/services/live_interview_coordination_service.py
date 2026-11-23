@@ -54,6 +54,11 @@ def _participant_status(db, room, user_id: int) -> str | None:
     return str(row.status) if row is not None else None
 
 
+def _reconcile_media_if_terminal(summary: dict[str, Any]) -> None:
+    if str(summary.get("status") or "") in calls.TERMINAL_CALL_STATES:
+        media.reconcile_room_media(room_id=str(summary["room_id"]), terminal=True)
+
+
 def create_invitation(
     *,
     admin_user_id: Any,
@@ -96,6 +101,7 @@ def list_invitations(
         for room in rooms:
             summary = _room_dict(db, room, role=_role_for(room, parsed_user_id))
             summary["participant_status"] = _participant_status(db, room, parsed_user_id)
+            _reconcile_media_if_terminal(summary)
             summaries.append(summary)
         return summaries
 
@@ -119,6 +125,7 @@ def get_invitation(
             )
         )
         summary["participant_status"] = str(access.participant.status)
+        _reconcile_media_if_terminal(summary)
         return summary
 
 
@@ -135,7 +142,9 @@ def accept_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room, role=calls.ROLE_CANDIDATE)
+        summary = _room_dict(db, room, role=calls.ROLE_CANDIDATE)
+        _reconcile_media_if_terminal(summary)
+        return summary
 
 
 def decline_invitation(
@@ -151,7 +160,9 @@ def decline_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room, role=calls.ROLE_CANDIDATE)
+        summary = _room_dict(db, room, role=calls.ROLE_CANDIDATE)
+        _reconcile_media_if_terminal(summary)
+        return summary
 
 
 def cancel_invitation(
@@ -167,7 +178,9 @@ def cancel_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room, role=calls.ROLE_ADMIN)
+        summary = _room_dict(db, room, role=calls.ROLE_ADMIN)
+        _reconcile_media_if_terminal(summary)
+        return summary
 
 
 def start_invitation(
@@ -183,7 +196,9 @@ def start_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room, role=calls.ROLE_ADMIN)
+        summary = _room_dict(db, room, role=calls.ROLE_ADMIN)
+        _reconcile_media_if_terminal(summary)
+        return summary
 
 
 def complete_invitation(
@@ -199,7 +214,9 @@ def complete_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room)
+        summary = _room_dict(db, room)
+        _reconcile_media_if_terminal(summary)
+        return summary
 
 
 def interrupt_invitation(
@@ -215,7 +232,31 @@ def interrupt_invitation(
             user_id=user_id,
             session_token=session_token,
         )
-        return _room_dict(db, room)
+        summary = _room_dict(db, room)
+        _reconcile_media_if_terminal(summary)
+        return summary
+
+
+def leave_call(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> dict[str, Any]:
+    role: str | None = None
+    with get_db_context() as db:
+        room = calls.leave_call_with_hangup(
+            db,
+            room_id,
+            user_id=user_id,
+            session_token=session_token,
+        )
+        role = _role_for(room, int(user_id))
+        summary = _room_dict(db, room, role=role)
+        _reconcile_media_if_terminal(summary)
+    if role is not None:
+        media.release_media_session(room_id=room_id, role=role)
+    return summary
 
 
 def leave_invitation(
@@ -224,14 +265,11 @@ def leave_invitation(
     user_id: Any,
     session_token: Any,
 ) -> dict[str, Any]:
-    with get_db_context() as db:
-        room = calls.mark_participant_left(
-            db,
-            room_id,
-            user_id=user_id,
-            session_token=session_token,
-        )
-        return _room_dict(db, room)
+    return leave_call(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
 
 
 def send_signal(
@@ -286,6 +324,14 @@ def signal_poll_seconds() -> int:
     return max(1, min(value, 30))
 
 
+def media_heartbeat_poll_seconds() -> int:
+    try:
+        value = int(settings.live_media_heartbeat_seconds)
+    except (TypeError, ValueError):
+        return 15
+    return max(5, min(value, 60))
+
+
 def get_media_config(
     *,
     room_id: str,
@@ -333,5 +379,43 @@ def release_media_session(
     return media.release_media_session(room_id=room_id, role=str(room["role"]))
 
 
-def heartbeat_media_session(*, room_id: str) -> bool:
-    return media.heartbeat_media_session(room_id=room_id)
+def reconcile_room_media(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> dict[str, Any]:
+    room = get_invitation(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
+    return media.reconcile_room_media(
+        room_id=room_id,
+        terminal=str(room["status"]) in calls.TERMINAL_CALL_STATES,
+    )
+
+
+def reconcile_stale_media_sessions() -> dict[str, Any]:
+    return media.reconcile_stale_media_sessions()
+
+
+def heartbeat_media_session(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+) -> bool:
+    room = get_invitation(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
+    role = str(room["role"])
+    if str(room["status"]) in calls.TERMINAL_CALL_STATES:
+        media.reconcile_room_media(room_id=room_id, terminal=True)
+        return False
+    if str(room.get("participant_status") or "") == calls.PARTICIPANT_LEFT:
+        media.release_media_session(room_id=room_id, role=role)
+        return False
+    return media.heartbeat_media_session(room_id=room_id, role=role)

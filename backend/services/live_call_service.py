@@ -757,6 +757,44 @@ def mark_participant_left(
     return access.room
 
 
+def leave_call_with_hangup(
+    db: Session,
+    room_id: str,
+    *,
+    user_id: Any,
+    session_token: Any,
+    now: datetime | None = None,
+) -> InterviewCallRoom:
+    current = _coerce_now(now)
+    access = require_call_access(db, room_id, user_id, session_token)
+    if str(access.participant.status) != PARTICIPANT_LEFT:
+        recipient_role = (
+            ROLE_CANDIDATE if str(access.role) == ROLE_ADMIN else ROLE_ADMIN
+        )
+        recipient = _get_participant_by_role(db, access.room, recipient_role)
+        if str(recipient.status) != PARTICIPANT_LEFT:
+            try:
+                enqueue_signal(
+                    db,
+                    room_id,
+                    user_id=user_id,
+                    session_token=session_token,
+                    signal_type=SIGNAL_HANGUP,
+                    recipient_role=recipient_role,
+                    payload={"reason": "user-left"},
+                    now=current,
+                )
+            except LiveCallRateLimited:
+                pass
+    return mark_participant_left(
+        db,
+        room_id,
+        user_id=user_id,
+        session_token=session_token,
+        now=current,
+    )
+
+
 def _validate_signaling_room(db: Session, access: CallAccess, current: datetime) -> None:
     if str(access.participant.status) == PARTICIPANT_LEFT:
         raise LiveCallInvalidTransition("You have left this live call.")
