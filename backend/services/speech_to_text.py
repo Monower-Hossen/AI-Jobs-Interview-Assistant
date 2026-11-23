@@ -76,13 +76,12 @@ class SpeechToText:
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         converted_path: str | None = None
-        audio_input = audio_path
-        if not is_audio_file(audio_path):
-            converted_path = self._convert_audio(audio_path)
-            audio_input = converted_path
-
         try:
             with acquire_heavy_task("whisper_transcription"):
+                audio_input = audio_path
+                if not is_audio_file(audio_path):
+                    converted_path = self._convert_audio(audio_path)
+                    audio_input = converted_path
                 self._load_model(model_size, device)
                 segments, info = self._model.transcribe(
                     audio_input,
@@ -92,27 +91,27 @@ class SpeechToText:
                     vad_parameters={"min_silence_duration_ms": 500},
                 )
 
-            text_parts = []
-            segment_list = []
+                text_parts = []
+                segment_list = []
 
-            for segment in segments:
-                text_parts.append(segment.text.strip())
-                segment_list.append(
-                    {
-                        "start": segment.start,
-                        "end": segment.end,
-                        "text": segment.text.strip(),
-                    }
+                for segment in segments:
+                    text_parts.append(segment.text.strip())
+                    segment_list.append(
+                        {
+                            "start": segment.start,
+                            "end": segment.end,
+                            "text": segment.text.strip(),
+                        }
+                    )
+
+                full_text = " ".join(text_parts).strip()
+
+                return TranscriptionResult(
+                    text=full_text,
+                    language=info.language,
+                    duration=info.duration,
+                    segments=segment_list,
                 )
-
-            full_text = " ".join(text_parts).strip()
-
-            return TranscriptionResult(
-                text=full_text,
-                language=info.language,
-                duration=info.duration,
-                segments=segment_list,
-            )
         finally:
             _remove_temp_file(converted_path)
 

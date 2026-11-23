@@ -2,23 +2,39 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import math
 import queue
 import threading
 import time
+import uuid
+import weakref
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 from fractions import Fraction
 from typing import Any
 
 import av
 from config.settings import settings
-from services.resource_monitor import end_heavy_task, try_begin_heavy_task
+from services.resource_monitor import (
+    LeaseReleaseStatus,
+    acquire_resource_lease,
+    end_heavy_task,
+    heartbeat_resource_lease,
+    release_resource_lease,
+)
 
 VIDEO_CODEC = "libx264"
 VIDEO_PIXEL_FORMAT = "yuv420p"
 VIDEO_TIME_BASE = Fraction(1, 90_000)
 VIDEO_DURATION_TOLERANCE_SECONDS = 0.05
 VIDEO_CONTAINER = "mp4"
+FINALIZE_TIMEOUT_ERROR = "The video encoder did not stop in time. Finalization can be retried."
+LEASE_HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+_ACTIVE_VIDEO_RECORDERS: weakref.WeakSet[LiveVideoRecorder] = weakref.WeakSet()
+_ACTIVE_VIDEO_RECORDERS_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -72,6 +88,9 @@ class LiveVideoRecorder:
         self._finalized_data: bytes | None = None
         self._error: str | None = None
         self._encoding_lease_held = False
+        self._encoding_lease_id: str | None = None
+        self._encoding_lease_owner = f"live-video:{uuid.uuid4().hex}"
+        self._last_lease_heartbeat_ns = time.monotonic_ns()
         self._frames_queued = 0
         self._frames_encoded = 0
         self._dropped_frames = 0
@@ -87,6 +106,8 @@ class LiveVideoRecorder:
         self._generation = 0
         self._first_received_monotonic_ns: int | None = None
         self._last_received_monotonic_ns: int | None = None
+        with _ACTIVE_VIDEO_RECORDERS_LOCK:
+            _ACTIVE_VIDEO_RECORDERS.add(self)
 
     @property
     def enabled(self) -> bool:
@@ -98,14 +119,24 @@ class LiveVideoRecorder:
         with self._lock:
             return self._generation
 
+    def is_alive(self) -> bool:
+        with self._lock:
+            return self._worker is not None and self._worker.is_alive()
+
     def set_error(self, message: str) -> None:
         with self._lock:
             self._error = str(message)
 
     def _release_encoding_lease_locked(self) -> None:
         if self._encoding_lease_held:
-            end_heavy_task("video_processing")
+            end_heavy_task(
+                "video_processing",
+                lease_id=self._encoding_lease_id,
+                owner_id=self._encoding_lease_owner,
+                worker_stopped=True,
+            )
             self._encoding_lease_held = False
+            self._encoding_lease_id = None
 
     def _frame_ticks(self) -> int:
         return max(1, round(float(1 / VIDEO_TIME_BASE) / max(1, self.fps)))
@@ -137,37 +168,47 @@ class LiveVideoRecorder:
                     self._release_encoding_lease_locked()
                     self._reset_locked()
                 if self._worker is None:
-                    lease_acquired = False
                     if not self._encoding_lease_held:
                         try:
-                            allowed, reason = try_begin_heavy_task("video_processing")
+                            lease, rejection = acquire_resource_lease(
+                                "video_processing",
+                                owner_id=self._encoding_lease_owner,
+                                worker=self,
+                            )
                         except Exception as exc:
-                            allowed, reason = False, str(exc)
-                        if not allowed:
+                            lease, rejection = None, None
+                            self._error = str(exc)
+                        if lease is None:
                             self._enabled = False
-                            self._error = reason or "Video processing is currently busy."
+                            self._error = self._error or (
+                                rejection.message
+                                if rejection is not None
+                                else "Video processing is currently busy."
+                            )
                             return
                         self._encoding_lease_held = True
-                        lease_acquired = True
-                    self._prepare_new_generation_locked()
-                    self._enabled = True
-                    self._stop_requested = False
-                    worker: threading.Thread | None = None
+                        self._encoding_lease_id = lease.lease_id
                     try:
-                        worker = threading.Thread(
+                        self._prepare_new_generation_locked()
+                        self._enabled = True
+                        self._stop_requested = False
+                        self._worker = threading.Thread(
                             target=self._consume, name="live-video-encoder", daemon=True
                         )
-                        self._worker = worker
-                        worker.start()
+                        self._worker.start()
                     except Exception as exc:
                         self._worker = None
                         self._enabled = False
                         self._error = f"Could not start the video encoder: {exc}"
-                        if worker is None or not worker.is_alive():
-                            self._release_encoding_lease_locked()
-                        elif lease_acquired:
+                        if self._encoding_lease_held and self._encoding_lease_id:
+                            release_resource_lease(
+                                self._encoding_lease_id,
+                                owner_id=self._encoding_lease_owner,
+                                worker_stopped=True,
+                                release_status=LeaseReleaseStatus.ROLLED_BACK,
+                            )
                             self._encoding_lease_held = False
-                            end_heavy_task("video_processing")
+                            self._encoding_lease_id = None
                     return
                 if self._stop_requested:
                     self._enabled = False
@@ -219,6 +260,18 @@ class LiveVideoRecorder:
             if dropped is None and self._first_received_monotonic_ns is None:
                 self._first_received_monotonic_ns = received_ns
             self._last_received_monotonic_ns = received_ns
+            if (
+                self._encoding_lease_held
+                and self._encoding_lease_id
+                and received_ns - self._last_lease_heartbeat_ns
+                >= int(LEASE_HEARTBEAT_INTERVAL_SECONDS * 1_000_000_000)
+            ):
+                if heartbeat_resource_lease(
+                    self._encoding_lease_id,
+                    owner_id=self._encoding_lease_owner,
+                    now_ns=received_ns,
+                ):
+                    self._last_lease_heartbeat_ns = received_ns
 
     @staticmethod
     def _coerce_time_base(value: Any) -> Fraction | None:
@@ -340,8 +393,6 @@ class LiveVideoRecorder:
             with self._lock:
                 if self._finalized:
                     return self._finalized_data or b""
-                if self._finalize_error:
-                    return b""
                 self._enabled = False
                 if self._worker is not None and not self._stop_requested:
                     self._stop_requested = True
@@ -351,14 +402,15 @@ class LiveVideoRecorder:
                 worker.join(timeout=10)
                 if worker.is_alive():
                     with self._lock:
-                        self._error = "The video encoder did not stop in time. Finalization can be retried."
-                        self._finalize_error = self._error
+                        self._error = FINALIZE_TIMEOUT_ERROR
+                        self._finalize_error = FINALIZE_TIMEOUT_ERROR
                     return b""
             with self._lock:
                 if self._finalized:
                     return self._finalized_data or b""
-                if self._finalize_error:
-                    return b""
+                if self._finalize_error == FINALIZE_TIMEOUT_ERROR:
+                    self._error = None
+                    self._finalize_error = None
                 try:
                     if (
                         self._stream is not None
@@ -416,6 +468,9 @@ class LiveVideoRecorder:
                 "pixel_format": VIDEO_PIXEL_FORMAT,
                 "container": VIDEO_CONTAINER,
                 "overflowed": self._overflowed,
+                "resource_lease_held": self._encoding_lease_held,
+                "resource_lease_id": self._encoding_lease_id,
+                "worker_alive": self._worker is not None and self._worker.is_alive(),
                 "error": self._error,
                 "first_received_monotonic_ns": self._first_received_monotonic_ns,
                 "last_received_monotonic_ns": self._last_received_monotonic_ns,
@@ -525,3 +580,16 @@ def validate_video_bytes(data: bytes) -> tuple[int, str]:
         raise ValueError("The camera recording is not a complete MP4 file.") from exc
     digest = hashlib.sha256(data).hexdigest()
     return len(data), digest
+
+
+def shutdown_all_video_recorders() -> int:
+    with _ACTIVE_VIDEO_RECORDERS_LOCK:
+        recorders = list(_ACTIVE_VIDEO_RECORDERS)
+    cleared = 0
+    for recorder in recorders:
+        try:
+            recorder.clear()
+            cleared += 1
+        except Exception as exc:
+            logger.warning("Could not clear a live video recorder at shutdown: %s", exc)
+    return cleared

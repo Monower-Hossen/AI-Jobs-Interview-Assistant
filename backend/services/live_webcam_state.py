@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from datetime import UTC, datetime
 
+from services.live_session_lifecycle import (
+    bump_stream_generation,
+    initialize_live_session_state,
+)
 from services.live_webcam_events import (
     LIVE_AUDIO_QUEUE_MAXSIZE,
     BoundedAudioEventQueue,
@@ -59,6 +63,7 @@ def _validate_kind(kind: str) -> str:
 
 
 def initialize_live_webcam_state(state: MutableMapping) -> None:
+    initialize_live_session_state(state)
     state.setdefault(CONSENT_CAMERA, False)
     state.setdefault(CONSENT_MICROPHONE, False)
     state.setdefault(CAMERA_REQUESTED, False)
@@ -100,6 +105,8 @@ def set_stream_requested(state: MutableMapping, kind: str, requested: bool) -> N
     state[_REQUEST_AT_KEYS[normalized]] = (
         datetime.now(UTC).replace(tzinfo=None).isoformat() if requested else None
     )
+    if requested:
+        bump_stream_generation(state, normalized)
     set_stream_error(state, normalized, None)
     if not requested and normalized == MICROPHONE:
         audio_event_queue(state).clear()
