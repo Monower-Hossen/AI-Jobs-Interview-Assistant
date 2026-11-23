@@ -25,11 +25,18 @@ def section(title: str, icon: str = "") -> None:
     st.subheader(title, icon=icon or None)
 
 
-def kpi_row(items: Sequence[tuple[str, str | int | float, str | int | float | None]]) -> None:
-    """Render responsive bordered metric cards: (label, value, delta)."""
+def kpi_row(
+    items: Sequence[
+        tuple[str, str | int | float, str | int | float | None]
+        | tuple[str, str | int | float, str | int | float | None, str]
+    ],
+) -> None:
+    """Render responsive bordered metric cards: (label, value, delta[, icon])."""
     with st.container(horizontal=True, wrap=True):
-        for label, value, delta in items:
-            st.metric(label, value, delta, border=True)
+        for item in items:
+            label, value, delta = item[0], item[1], item[2]
+            icon = item[3] if len(item) == 4 else None
+            st.metric(label, value, delta, border=True, icon=icon)
 
 
 def ai_provider_status() -> None:
@@ -189,6 +196,19 @@ def render_score_chart(scores: dict[str, float], caption: str = "Model-generated
     st.caption("AI-generated rubric scores are advisory, not objective ground truth.")
 
 
+def show_improvement_plan(title, plan):
+    if not plan:
+        st.caption(f"No {title} available")
+        return
+    for item in plan:
+        if isinstance(item, dict):
+            with st.expander(f"Day {item.get('day', '?')}: {item.get('focus', 'Focus')}"):
+                st.write(f"**Activity:** {item.get('activity', 'N/A')}")
+                st.write(f"**Estimated hours:** {item.get('estimated_hours', 'N/A')}")
+                for resource in item.get("resources") or []:
+                    st.markdown(f"- {resource}")
+
+
 def empty_state(message: str, hint: str = "") -> None:
     st.info(message, icon=":material/inbox:")
     if hint:
@@ -199,13 +219,6 @@ def error_state(message: str, detail: str = "") -> None:
     st.error(message, icon=":material/error:")
     if detail:
         st.caption(detail)
-
-
-def loading_slot(height: int = 240):
-    slot = st.container()
-    with slot.skeleton(height=height):
-        st.caption("Loading�?�")
-    return slot
 
 
 def render_resource_status_sidebar(key_prefix: str = "resource") -> None:
