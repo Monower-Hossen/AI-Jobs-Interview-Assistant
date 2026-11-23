@@ -34,6 +34,10 @@ from services.live_recording_manifest import (
     update_video_manifest,
     utc_now_iso,
 )
+from services.live_session_lifecycle import (
+    LIVE_SESSION_KEYS,
+    initialize_live_session_state,
+)
 from services.live_webcam_audio import LiveAudioRecorder
 from services.live_webcam_video import LiveVideoRecorder
 
@@ -90,6 +94,7 @@ LIVE_INTERVIEW_STATE_KEYS = (
     SUBMITTED_FINGERPRINT,
     TTS_COUNTER,
     INTERVIEW_ERROR,
+    *LIVE_SESSION_KEYS,
 )
 
 
@@ -116,6 +121,7 @@ def initialize_live_interview_state(state: MutableMapping) -> None:
     state.setdefault(AUDIO_ERROR, None)
     state.setdefault(VIDEO_ERROR, None)
     state.setdefault(RECORDER_LAST_FAILURE, None)
+    initialize_live_session_state(state)
     initialize_recorder_lifecycle(state)
     state.setdefault(INTERVIEW_ERROR, None)
     get_recorder(state)

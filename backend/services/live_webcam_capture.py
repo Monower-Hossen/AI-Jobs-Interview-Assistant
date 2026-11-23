@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from services.live_webcam_audio import LiveAudioRecorder
 from services.live_webcam_events import AudioFrameEvent, BoundedAudioEventQueue
 from services.live_webcam_video import LiveVideoRecorder
@@ -12,15 +14,29 @@ class PreviewVideoProcessor(VideoProcessorBase):
 
 
 class RecordingVideoProcessor(PreviewVideoProcessor):
-    def __init__(self, recorder: LiveVideoRecorder):
+    def __init__(
+        self,
+        recorder: LiveVideoRecorder,
+        *,
+        generation: int | None = None,
+        is_current: Callable[[], bool] | None = None,
+        on_ended: Callable[[], None] | None = None,
+    ):
         super().__init__()
         self._recorder = recorder
-        self._generation: int | None = None
+        self._generation = generation
+        self._generation_pinned = generation is not None
+        self._is_current = is_current
+        self._on_ended = on_ended
 
     def recv(self, frame):
+        if self._is_current is not None and not self._is_current():
+            return frame
         if self._recorder.enabled:
             generation = self._recorder.generation
-            if self._generation is None:
+            if self._generation is None or (
+                not self._generation_pinned and self._generation != generation
+            ):
                 self._generation = generation
             if self._generation == generation:
                 try:
@@ -36,7 +52,13 @@ class RecordingVideoProcessor(PreviewVideoProcessor):
         return result
 
     def on_ended(self) -> None:
+        if self._is_current is not None and not self._is_current():
+            return
+        if self._generation is not None and self._generation != self._recorder.generation:
+            return
         self._recorder.set_enabled(False)
+        if self._on_ended is not None:
+            self._on_ended()
 
 
 class SilentAudioProcessor(AudioProcessorBase):
@@ -64,16 +86,31 @@ class SilentAudioProcessor(AudioProcessorBase):
 
 
 class RecordingAudioProcessor(SilentAudioProcessor):
-    def __init__(self, event_queue: BoundedAudioEventQueue, recorder: LiveAudioRecorder):
+    def __init__(
+        self,
+        event_queue: BoundedAudioEventQueue,
+        recorder: LiveAudioRecorder,
+        *,
+        generation: int | None = None,
+        is_current: Callable[[], bool] | None = None,
+        on_ended: Callable[[], None] | None = None,
+    ):
         super().__init__(event_queue)
         self._recorder = recorder
-        self._generation: int | None = None
+        self._generation = generation
+        self._generation_pinned = generation is not None
+        self._is_current = is_current
+        self._on_ended = on_ended
 
     def recv(self, frame):
+        if self._is_current is not None and not self._is_current():
+            return frame
         result = super().recv(frame)
         if self._recorder.enabled:
             generation = self._recorder.generation
-            if self._generation is None:
+            if self._generation is None or (
+                not self._generation_pinned and self._generation != generation
+            ):
                 self._generation = generation
             if self._generation == generation:
                 try:
@@ -83,5 +120,11 @@ class RecordingAudioProcessor(SilentAudioProcessor):
         return result
 
     def on_ended(self) -> None:
+        if self._is_current is not None and not self._is_current():
+            return
+        if self._generation is not None and self._generation != self._recorder.generation:
+            return
         super().on_ended()
         self._recorder.set_enabled(False)
+        if self._on_ended is not None:
+            self._on_ended()
