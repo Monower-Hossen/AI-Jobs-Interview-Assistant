@@ -49,6 +49,7 @@ _ADD_COLUMNS: dict[str, dict[str, str]] = {
     "user_sessions": {
         "user_id": "INTEGER",
         "label": "TEXT",
+        "revoked_at": "DATETIME",
     },
     "interview_sessions": {
         "duration_seconds": "INTEGER DEFAULT 0",
@@ -210,6 +211,7 @@ def init_database() -> None:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     SessionLocal = sessionmaker(
