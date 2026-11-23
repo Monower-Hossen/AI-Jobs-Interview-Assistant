@@ -4,7 +4,7 @@ from typing import Any
 
 import streamlit as st
 from services import live_call_service as calls
-from services.live_interview_coordination_service import send_signal
+from services.live_interview_coordination_service import leave_call, send_signal
 
 _HTML = """
 <div data-live-call-root class="live-call-root">
@@ -82,6 +82,7 @@ export default function (component) {
       localStream: null,
       remoteStream: null,
       started: false,
+      joining: false,
       cameraEnabled: true,
       micEnabled: true,
       processedIds: new Set(),
@@ -132,6 +133,14 @@ export default function (component) {
     micButton.disabled = !state.started;
     cameraButton.textContent = state.cameraEnabled ? "Turn camera off" : "Turn camera on";
     micButton.textContent = state.micEnabled ? "Mute microphone" : "Unmute microphone";
+  }
+
+  function beginJoin() {
+    if (state.joining || state.started) {
+      return false;
+    }
+    state.joining = true;
+    return true;
   }
 
   function emitSignal(kind, payload) {
@@ -291,6 +300,9 @@ export default function (component) {
   }
 
   async function startLocalMedia(sendOffer, attachTracks) {
+    if (state.started) {
+      return false;
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatus("Browser camera and microphone capture is unavailable.", "bad");
       return false;
@@ -418,14 +430,22 @@ export default function (component) {
   if (!root.dataset.bound) {
     root.dataset.bound = "1";
     joinButton.addEventListener("click", async () => {
+      if (!beginJoin()) {
+        return;
+      }
       try {
         await startLocalMedia(true, true);
       } catch (error) {
+        cleanup(false);
         setStatus("Camera or microphone access was denied or failed.", "bad");
+        updateButtons();
+      } finally {
+        state.joining = false;
       }
     });
     leaveButton.addEventListener("click", () => {
-      cleanup(true);
+      emitSignal("leave", {});
+      cleanup(false);
       setStatus("You left the call.", "warn");
       updateButtons();
     });
@@ -450,7 +470,7 @@ export default function (component) {
   }
 
   if (!cfg.enabled && state.started) {
-    cleanup(true);
+    cleanup(false);
     setStatus("Call is no longer available.", "warn");
   }
   if (!state.started) {
@@ -529,6 +549,18 @@ def _enqueue_outbox(
             continue
         kind = str(event.get("kind") or "")
         payload = event.get("payload")
+        if kind == "leave":
+            try:
+                leave_call(
+                    room_id=room_id,
+                    user_id=user_id,
+                    session_token=session_token,
+                )
+            except calls.LiveCallError as exc:
+                st.session_state[_error_key(room_id)] = str(exc)[:200]
+            except Exception as exc:
+                st.session_state[_error_key(room_id)] = f"Leave could not be completed: {type(exc).__name__}"
+            continue
         if kind not in calls.SIGNAL_TYPES or not isinstance(payload, dict):
             continue
         try:

@@ -7,6 +7,8 @@ from services import live_call_service as calls
 from services.live_interview_coordination_service import (
     attach_media_session,
     get_media_config,
+    heartbeat_media_session,
+    media_heartbeat_poll_seconds,
     receive_signals,
     release_media_session,
     signal_poll_seconds,
@@ -209,6 +211,7 @@ def _run_action(action, success_message: str, room_id: str) -> bool:
 
 
 def _poll_signals(room_id: str, user_id: int, session_token: str) -> None:
+    media.reconcile_stale_media_sessions()
     try:
         messages = receive_signals(
             room_id=room_id,
@@ -228,16 +231,27 @@ def _poll_signals(room_id: str, user_id: int, session_token: str) -> None:
     st.session_state[key] = history[-50:]
 
 
-@st.fragment(run_every=f"{signal_poll_seconds()}s")
+@st.fragment(run_every=f"{min(signal_poll_seconds(), media_heartbeat_poll_seconds())}s")
 def _poll_signals_fragment(room_id: str, user_id: int, session_token: str) -> None:
     _poll_signals(room_id, user_id, session_token)
+    try:
+        heartbeat_media_session(
+            room_id=room_id,
+            user_id=user_id,
+            session_token=session_token,
+        )
+    except Exception:
+        return
 
 
 def render_live_call_panel(room: dict[str, Any]) -> None:
     status = str(room["status"])
+    room_id = str(room["room_id"])
+    if status in calls.TERMINAL_CALL_STATES:
+        media.reconcile_room_media(room_id=room_id, terminal=True)
+        return
     if status not in {calls.ACCEPTED, calls.IN_PROGRESS}:
         return
-    room_id = str(room["room_id"])
     user_id, session_token = _identity()
     key = _signal_key(room_id)
     if key not in st.session_state:
@@ -274,6 +288,11 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
         st.caption(str(exc)[:200])
         return
 
+    heartbeat_media_session(
+        room_id=room_id,
+        user_id=user_id,
+        session_token=session_token,
+    )
     st.caption(f"Room media slot active: {len(media_state.get('roles') or [])} participant role(s).")
     incoming = [_jsonable(message) for message in list(st.session_state.get(key) or [])]
     render_live_call(
@@ -288,6 +307,7 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
 
 def render_room(room: dict[str, Any]) -> bool:
     room_id = str(room["room_id"])
+    media.reconcile_stale_media_sessions()
     with st.container(border=True):
         st.markdown(f"### {room.get('title') or 'Live interview'}")
         st.caption(f"Room: {room_id}")
