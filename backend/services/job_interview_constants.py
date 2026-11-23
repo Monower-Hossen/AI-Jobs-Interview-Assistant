@@ -7,7 +7,7 @@ INTERVIEW_CATEGORIES: tuple[str, ...] = (
     "Job-Specific",
 )
 
-INTERVIEW_MODES: tuple[str, ...] = ("text", "voice", "video")
+INTERVIEW_MODES: tuple[str, ...] = ("text", "voice", "video", "avatar")
 
 DIFFICULTIES: tuple[str, ...] = ("easy", "medium", "hard")
 

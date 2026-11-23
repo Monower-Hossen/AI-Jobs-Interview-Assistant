@@ -441,7 +441,7 @@ def submit_job_answer(
                 answer_text=text,
                 transcription_source=(
                     "voice"
-                    if state.config.mode == "voice"
+                    if state.config.mode in {"voice", "avatar"}
                     else "video" if state.config.mode == "video" else "text"
                 ),
             )
