@@ -26,6 +26,10 @@ def show_history_page() -> None:
     page_header(
         "Interview history", "Browse, compare and export your past sessions", ":material/history:"
     )
+    render_legacy_history()
+
+
+def render_legacy_history() -> None:
     _ensure_user_session()
     token = st.session_state.user_session_id
     actor_user_id = st.session_state.get("user_id")
