@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import logging
 import os
 import sys
@@ -48,6 +49,27 @@ from frontend.shared.auth_ui import show_auth_page, sign_out
 from frontend.shared.components import render_resource_status_sidebar
 
 
+def _teardown_live_capture(reason: str) -> None:
+    try:
+        from frontend.shared.live_session_cleanup import teardown_for_auth
+
+        teardown_for_auth(reason=reason)
+    except Exception:
+        logging.getLogger(__name__).exception("live_capture_teardown_failed")
+
+
+def _shutdown_live_capture() -> None:
+    try:
+        from services.live_webcam_video import shutdown_all_video_recorders
+
+        shutdown_all_video_recorders()
+    except Exception:
+        logging.getLogger(__name__).exception("live_capture_shutdown_failed")
+
+
+atexit.register(_shutdown_live_capture)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI Interview Intelligence Platform",
@@ -72,6 +94,7 @@ def main() -> None:
         account = _current_account()
     except Exception:
         logging.getLogger(__name__).exception("auth.resolve_account_failed")
+        _teardown_live_capture("Session validation failed during live capture.")
         st.session_state.pop("account", None)
         st.session_state.pop("user_id", None)
         st.session_state.pop("must_change_password", None)
@@ -125,6 +148,7 @@ def _current_account():
 
     account = get_account(int(user_id))
     if account is None or not getattr(account, "is_active", False):
+        _teardown_live_capture("The account became inactive during live capture.")
         st.session_state.pop("account", None)
         st.session_state.pop("user_id", None)
         st.session_state.pop("must_change_password", None)
@@ -242,6 +266,12 @@ def _admin_pages() -> dict:
                 icon=":material/forum:",
             ),
             st.Page(
+                "frontend/admin/live_interview_invitations.py",
+                title="Live interview invitations",
+                icon=":material/videocam:",
+                url_path="admin-live-interviews",
+            ),
+            st.Page(
                 "frontend/admin/live_media.py",
                 title="Live recording management",
                 icon=":material/video_file:",
@@ -298,6 +328,12 @@ def _user_pages(account) -> dict:
                 icon=":material/notifications:",
                 url_path="notifications",
             ),
+            st.Page(
+                "frontend/user/live_interview_invitations.py",
+                title="Live interview invitations",
+                icon=":material/videocam:",
+                url_path="live-interview-invitations",
+            ),
         ],
         "Practice": [
             st.Page(
@@ -305,6 +341,12 @@ def _user_pages(account) -> dict:
                 title="Job interview",
                 icon=":material/videocam:",
                 url_path="job-interview",
+            ),
+            st.Page(
+                "frontend/user/ai_avatar_interview.py",
+                title="AI avatar interview",
+                icon=":material/smart_toy:",
+                url_path="ai-avatar-interview",
             ),
             st.Page(
                 "frontend/user/mock_interview.py", title="Mock interview", icon=":material/forum:"
