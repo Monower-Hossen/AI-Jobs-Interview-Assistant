@@ -1,7 +1,13 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from services.live_webcam_capture import PreviewVideoProcessor, SilentAudioProcessor
+from services.live_webcam_capture import (
+    PreviewVideoProcessor,
+    RecordingAudioProcessor,
+    RecordingVideoProcessor,
+    SilentAudioProcessor,
+)
 from services.live_webcam_events import AudioFrameEvent, BoundedAudioEventQueue
 from services.live_webcam_state import (
     AUDIO_EVENT_QUEUE,
@@ -23,6 +29,8 @@ from services.live_webcam_state import (
     stream_status,
 )
 from streamlit.testing.v1 import AppTest
+
+from frontend.user import live_webcam_interview as live_page
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -171,3 +179,142 @@ def test_live_webcam_page_renders_and_respects_consent():
     assert at.checkbox(key=CONSENT_MICROPHONE).value is True
     assert at.button(key="_live_webcam_start_camera")
     assert at.button(key="_live_webcam_stop_camera")
+
+
+class _GenerationVideoRecorder:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.generation = 1
+        self.enqueued: list[int] = []
+        self.errors: list[str] = []
+
+    def enqueue(self, frame, *, generation: int) -> None:
+        self.enqueued.append(generation)
+
+    def set_error(self, message: str) -> None:
+        self.errors.append(message)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class _GenerationAudioRecorder:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.generation = 1
+        self.frames = 0
+        self.errors: list[str] = []
+
+    def append_frame(self, frame) -> None:
+        self.frames += 1
+
+    def set_capture_error(self, message: str) -> None:
+        self.errors.append(message)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+def test_recording_video_processor_relatches_auto_generation() -> None:
+    recorder = _GenerationVideoRecorder()
+    ended: list[int] = []
+    processor = RecordingVideoProcessor(
+        recorder,
+        is_current=lambda: True,
+        on_ended=lambda: ended.append(1),
+    )
+    frame = object()
+
+    assert processor.recv(frame) is frame
+    recorder.generation = 2
+    assert processor.recv(frame) is frame
+    assert recorder.enqueued == [1, 2]
+
+    processor.on_ended()
+
+    assert ended == [1]
+    assert recorder.enabled is False
+
+
+def test_recording_audio_processor_relatches_auto_generation() -> None:
+    event_queue = BoundedAudioEventQueue(maxsize=4)
+    recorder = _GenerationAudioRecorder()
+    processor = RecordingAudioProcessor(
+        event_queue,
+        recorder,
+        is_current=lambda: True,
+    )
+
+    processor.recv(_FakeFrame())
+    recorder.generation = 2
+    processor.recv(_FakeFrame())
+
+    assert recorder.frames == 2
+    assert len(event_queue.drain()) == 2
+
+    processor.on_ended()
+
+    assert recorder.enabled is False
+    assert event_queue.drain() == []
+
+
+def test_pinned_generation_processor_ignores_new_recording() -> None:
+    recorder = _GenerationVideoRecorder()
+    processor = RecordingVideoProcessor(
+        recorder,
+        generation=1,
+        is_current=lambda: True,
+    )
+    frame = object()
+    recorder.generation = 2
+
+    assert processor.recv(frame) is frame
+    assert recorder.enqueued == []
+
+    processor.on_ended()
+
+    assert recorder.enabled is True
+
+
+def test_webrtc_streamer_uses_processor_factories_without_ended_callbacks(monkeypatch) -> None:
+    class _ContextState:
+        playing = False
+        signalling = False
+
+    class _Context:
+        state = _ContextState()
+
+    calls: list[dict] = []
+
+    def _fake_streamer(**kwargs):
+        calls.append(kwargs)
+        return _Context()
+
+    monkeypatch.setattr(live_page, "webrtc_streamer", _fake_streamer)
+    monkeypatch.setattr(live_page, "st", SimpleNamespace(session_state={}))
+    monkeypatch.setattr(live_page, "get_video_recorder", lambda _: SimpleNamespace(generation=3))
+    monkeypatch.setattr(live_page, "get_recorder", lambda _: SimpleNamespace(generation=4))
+    monkeypatch.setattr(
+        live_page,
+        "get_audio_event_queue",
+        lambda _: BoundedAudioEventQueue(maxsize=2),
+    )
+    monkeypatch.setattr(live_page, "current_live_owner", lambda _: None)
+    monkeypatch.setattr(live_page, "current_answer_id", lambda _: None)
+    monkeypatch.setattr(
+        live_page,
+        "_stream_callbacks",
+        lambda _kind: (1, lambda: True, lambda: None),
+    )
+    monkeypatch.setattr(live_page, "_sync_stream_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(live_page, "_render_stream_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(live_page, "_render_audio_activity", lambda: None)
+
+    live_page._render_video_stream(False)
+    live_page._render_audio_stream(False)
+
+    video_kwargs, audio_kwargs = calls
+    assert "on_video_ended" not in video_kwargs
+    assert "on_audio_ended" not in audio_kwargs
+    assert video_kwargs["video_processor_factory"]()._generation is None
+    assert audio_kwargs["audio_processor_factory"]()._generation is None

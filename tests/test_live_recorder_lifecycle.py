@@ -40,6 +40,10 @@ from services.live_webcam_events import BoundedAudioEventQueue
 from frontend.user import live_webcam_interview as live_page
 
 
+def _fake_acquire_resource_lease(*args, **kwargs):
+    return SimpleNamespace(lease_id="test-lease"), None
+
+
 class _FakeAudioRecorder:
     def __init__(self, capture_error: str | None = None) -> None:
         self.capture_error = capture_error
@@ -485,9 +489,14 @@ def test_stale_audio_and_video_callbacks_are_ignored() -> None:
     audio_recorder = _GenerationAudioRecorder()
     video_recorder = _GenerationVideoRecorder()
     audio_processor = RecordingAudioProcessor(
-        BoundedAudioEventQueue(maxsize=4), audio_recorder
+        BoundedAudioEventQueue(maxsize=4),
+        audio_recorder,
+        generation=audio_recorder.generation,
     )
-    video_processor = RecordingVideoProcessor(video_recorder)
+    video_processor = RecordingVideoProcessor(
+        video_recorder,
+        generation=video_recorder.generation,
+    )
     frame = object()
 
     audio_processor.recv(frame)
@@ -518,8 +527,8 @@ def test_duplicate_transcription_and_persistence_claims_are_rejected() -> None:
 def test_phase331_video_finalize_is_idempotent_and_releases_lease(monkeypatch) -> None:
     ended: list[str] = []
 
-    monkeypatch.setattr(live_video, "try_begin_heavy_task", lambda _task: (True, None))
-    monkeypatch.setattr(live_video, "end_heavy_task", ended.append)
+    monkeypatch.setattr(live_video, "acquire_resource_lease", _fake_acquire_resource_lease)
+    monkeypatch.setattr(live_video, "end_heavy_task", lambda task, **kwargs: ended.append(task))
     recorder = live_video.LiveVideoRecorder()
     recorder.set_enabled(True)
 

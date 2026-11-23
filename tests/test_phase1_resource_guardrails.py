@@ -9,10 +9,13 @@ from backend.services.resource_monitor import (
     ResourceBusyError,
     ResourceSnapshot,
     acquire_heavy_task,
+    acquire_resource_lease,
     check_heavy_task_allowed,
     end_heavy_task,
     format_resource_status,
+    get_resource_admission_diagnostics,
     get_resource_snapshot,
+    release_resource_lease,
     reset_resource_monitor_state,
     try_begin_heavy_task,
 )
@@ -151,4 +154,42 @@ def test_try_begin_and_end_heavy_task(monkeypatch):
     end_heavy_task("video_processing")
     allowed3, _ = check_heavy_task_allowed("embedding_generation")
     assert allowed3
+    reset_resource_monitor_state()
+
+
+def test_acquire_heavy_task_with_owner_releases_its_lease(monkeypatch) -> None:
+    import backend.config.settings as settings_mod
+    import backend.services.resource_monitor as rm
+
+    reset_resource_monitor_state()
+    monkeypatch.setattr(settings_mod.settings, "resource_guardrails_enabled", True)
+    monkeypatch.setattr(rm, "get_resource_snapshot", lambda force=False: _snapshot())
+
+    with acquire_heavy_task("video_processing", owner_id="owner-a"):
+        assert get_resource_admission_diagnostics()["active_lease_count"] == 1
+
+    assert get_resource_admission_diagnostics()["active_lease_count"] == 0
+    assert check_heavy_task_allowed("video_processing")[0]
+    reset_resource_monitor_state()
+
+
+def test_end_heavy_task_without_legacy_lease_does_not_decrement_active_count(monkeypatch) -> None:
+    import backend.config.settings as settings_mod
+    import backend.services.resource_monitor as rm
+
+    reset_resource_monitor_state()
+    monkeypatch.setattr(settings_mod.settings, "resource_guardrails_enabled", True)
+    monkeypatch.setattr(rm, "get_resource_snapshot", lambda force=False: _snapshot())
+    lease, rejection = acquire_resource_lease(
+        "video_processing",
+        owner_id="owner-b",
+        snapshot=_snapshot(),
+    )
+    assert lease is not None and rejection is None
+
+    end_heavy_task("video_processing")
+
+    assert get_resource_admission_diagnostics()["active_lease_count"] == 1
+    assert release_resource_lease(lease.lease_id, owner_id="owner-b")
+    assert get_resource_admission_diagnostics()["active_lease_count"] == 0
     reset_resource_monitor_state()

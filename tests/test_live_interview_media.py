@@ -56,6 +56,10 @@ from streamlit.testing.v1 import AppTest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _fake_acquire_resource_lease(*args, **kwargs):
+    return SimpleNamespace(lease_id="test-lease"), None
+
+
 def _wav_bytes() -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -191,8 +195,8 @@ def _create_interview(media_db, *, report=None, workspace_id: int | None = None)
 def test_video_recorder_writes_valid_mp4(monkeypatch) -> None:
     from services import live_webcam_video
 
-    monkeypatch.setattr(live_webcam_video, "try_begin_heavy_task", lambda task, snapshot=None: (True, None))
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: None)
+    monkeypatch.setattr(live_webcam_video, "acquire_resource_lease", _fake_acquire_resource_lease)
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: None)
 
     recorder = LiveVideoRecorder(max_frames=5, queue_maxsize=10)
     frame = av.VideoFrame.from_ndarray(
@@ -223,8 +227,8 @@ def test_video_recorder_writes_valid_mp4(monkeypatch) -> None:
 def _deterministic_video_guardrail(monkeypatch):
     from services import live_webcam_video
 
-    monkeypatch.setattr(live_webcam_video, "try_begin_heavy_task", lambda task, snapshot=None: (True, None))
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: None)
+    monkeypatch.setattr(live_webcam_video, "acquire_resource_lease", _fake_acquire_resource_lease)
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: None)
 
 
 def _video_frame(*, pts: int | None, time_base: Fraction = Fraction(1, 30), shade: int = 120):
@@ -424,7 +428,7 @@ def test_finalize_does_not_close_container_while_worker_is_alive(monkeypatch) ->
     from services import live_webcam_video
 
     ended: list[str] = []
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: ended.append(task))
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: ended.append(task))
     recorder = LiveVideoRecorder()
     worker = _FakeWorker(alive=True)
     closes: list[int] = []
@@ -443,13 +447,51 @@ def test_finalize_does_not_close_container_while_worker_is_alive(monkeypatch) ->
     assert "did not stop" in (recorder.snapshot()["error"] or "")
 
 
+def test_finalize_timeout_can_be_retried_without_duplicate_release(
+    monkeypatch, _deterministic_video_guardrail
+) -> None:
+    from services import live_webcam_video
+
+    ended: list[str] = []
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: ended.append(task))
+    recorder = LiveVideoRecorder()
+    worker = _FakeWorker(alive=True)
+    closes: list[int] = []
+    recorder._worker = worker
+    recorder._container = SimpleNamespace(close=lambda: closes.append(1))
+    recorder._stream = SimpleNamespace(encode=list)
+    recorder._buffer = io.BytesIO(_mp4_bytes())
+    recorder._encoding_lease_held = True
+
+    first = recorder.finalize()
+
+    assert first == b""
+    assert closes == []
+    assert ended == []
+    assert worker.join_calls == [10]
+    assert "did not stop" in (recorder.snapshot()["error"] or "")
+    assert recorder.snapshot()["finalized"] is False
+    assert recorder._encoding_lease_held is True
+
+    worker.alive = False
+    second = recorder.finalize()
+
+    assert second == _mp4_bytes()
+    assert closes == [1]
+    assert ended == ["video_processing"]
+    assert worker.join_calls == [10, 10]
+    assert recorder.snapshot()["finalized"] is True
+    assert recorder.snapshot()["error"] is None
+    assert recorder._encoding_lease_held is False
+
+
 def test_finalize_releases_lease_once_and_repeated_calls_are_cached(
     monkeypatch, _deterministic_video_guardrail
 ) -> None:
     from services import live_webcam_video
 
     ended: list[str] = []
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: ended.append(task))
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: ended.append(task))
     recorder = LiveVideoRecorder(max_frames=10, queue_maxsize=10)
     recorder.set_enabled(True)
     for pts in range(5):
@@ -516,7 +558,7 @@ def test_worker_failure_restart_ignores_stale_generation_messages(
     from services import live_webcam_video
 
     ended: list[str] = []
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: ended.append(task))
+    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task, **kwargs: ended.append(task))
     recorder = LiveVideoRecorder(queue_maxsize=10)
     original_ensure = recorder._ensure_container
     failed = False
@@ -553,9 +595,13 @@ def test_worker_failure_restart_ignores_stale_generation_messages(
 def test_thread_constructor_failure_releases_lease(monkeypatch) -> None:
     from services import live_webcam_video
 
-    ended: list[str] = []
-    monkeypatch.setattr(live_webcam_video, "try_begin_heavy_task", lambda task, snapshot=None: (True, None))
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: ended.append(task))
+    released: list[str] = []
+    monkeypatch.setattr(live_webcam_video, "acquire_resource_lease", _fake_acquire_resource_lease)
+    monkeypatch.setattr(
+        live_webcam_video,
+        "release_resource_lease",
+        lambda lease_id, **kwargs: released.append(lease_id) or True,
+    )
 
     class FailingThread:
         def __init__(self, **kwargs):
@@ -565,7 +611,7 @@ def test_thread_constructor_failure_releases_lease(monkeypatch) -> None:
     recorder = LiveVideoRecorder()
     recorder.set_enabled(True)
 
-    assert ended == ["video_processing"]
+    assert released == ["test-lease"]
     assert recorder._encoding_lease_held is False
     assert recorder._worker is None
     assert recorder.enabled is False
@@ -575,9 +621,13 @@ def test_thread_constructor_failure_releases_lease(monkeypatch) -> None:
 def test_thread_start_failure_releases_lease(monkeypatch) -> None:
     from services import live_webcam_video
 
-    ended: list[str] = []
-    monkeypatch.setattr(live_webcam_video, "try_begin_heavy_task", lambda task, snapshot=None: (True, None))
-    monkeypatch.setattr(live_webcam_video, "end_heavy_task", lambda task: ended.append(task))
+    released: list[str] = []
+    monkeypatch.setattr(live_webcam_video, "acquire_resource_lease", _fake_acquire_resource_lease)
+    monkeypatch.setattr(
+        live_webcam_video,
+        "release_resource_lease",
+        lambda lease_id, **kwargs: released.append(lease_id) or True,
+    )
 
     class FailingStartThread:
         def __init__(self, **kwargs):
@@ -593,7 +643,7 @@ def test_thread_start_failure_releases_lease(monkeypatch) -> None:
     recorder = LiveVideoRecorder()
     recorder.set_enabled(True)
 
-    assert ended == ["video_processing"]
+    assert released == ["test-lease"]
     assert recorder._encoding_lease_held is False
     assert recorder._worker is None
     assert recorder.enabled is False
