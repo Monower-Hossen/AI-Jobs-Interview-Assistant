@@ -732,13 +732,6 @@ def load_job_record(record_id: int, session_id: int, actor_user_id: int | None) 
         )
 
 
-def load_latest_job(session_id: int, actor_user_id: int | None) -> JobDetails | None:
-    records = list_job_history(session_id, actor_user_id)
-    if not records:
-        return None
-    return load_job_record(records[0].id, session_id, actor_user_id)
-
-
 def save_match_analysis(
     session_id: int,
     actor_user_id: int | None,
