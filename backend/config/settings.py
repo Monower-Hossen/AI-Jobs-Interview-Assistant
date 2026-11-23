@@ -48,13 +48,6 @@ def _env(name: str, default: str = "") -> str:
     return _text(os.getenv(name)) or default
 
 
-def _env_list(name: str, default: str = "") -> list[str]:
-    raw = _text(os.getenv(name))
-    if raw is None:
-        return [item.strip() for item in default.split(",") if item.strip()]
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 def _warn_invalid(name: str, raw: str, default: Any) -> None:
     logger.warning(
         "config.invalid_value",
@@ -258,6 +251,8 @@ class Settings:
     webrtc_audio_echo_cancellation: Any = _UNSET
     webrtc_audio_noise_suppression: Any = _UNSET
     webrtc_audio_auto_gain_control: Any = _UNSET
+    live_media_heartbeat_seconds: Any = _UNSET
+    live_media_stale_seconds: Any = _UNSET
 
     live_media_root: Any = _UNSET
     live_media_max_bytes: Any = _UNSET
@@ -643,6 +638,26 @@ class Settings:
         self.webrtc_audio_auto_gain_control = _resolve_bool(
             self.webrtc_audio_auto_gain_control, "WEBRTC_AUDIO_AUTO_GAIN_CONTROL", True
         )
+        self.live_media_heartbeat_seconds = _resolve_number(
+            self.live_media_heartbeat_seconds,
+            "LIVE_MEDIA_HEARTBEAT_SECONDS",
+            parse=float,
+            default=15.0,
+            minimum=5.0,
+            maximum=60.0,
+        )
+        self.live_media_stale_seconds = _resolve_number(
+            self.live_media_stale_seconds,
+            "LIVE_MEDIA_STALE_SECONDS",
+            parse=float,
+            default=120.0,
+            minimum=30.0,
+            maximum=900.0,
+        )
+        if self.live_media_stale_seconds < self.live_media_heartbeat_seconds * 2:
+            self.live_media_stale_seconds = min(
+                900.0, max(30.0, float(self.live_media_heartbeat_seconds) * 2)
+            )
 
         self.live_media_root = _env_path("LIVE_MEDIA_STORAGE_PATH", "storage/live_interviews")
         self.live_media_max_bytes = _resolve_number(
