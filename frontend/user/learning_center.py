@@ -1,6 +1,4 @@
 import streamlit as st
-from database import Assessment, get_db_context
-from services.analytics import get_analytics
 from services.auth_service import owned_session_id
 from services.learning_service import (
     get_learning_snapshot,
@@ -9,7 +7,6 @@ from services.learning_service import (
     record_resource_progress,
     refresh_task_reminders,
 )
-from services.roadmap_service import list_roadmaps
 from services.user_content_service import delete_note, list_notes, save_note
 
 from frontend.shared.components import (
@@ -22,6 +19,7 @@ from frontend.shared.components import (
 )
 from frontend.shared.navigation import go_to
 from frontend.user.knowledge_page import show_knowledge_page
+from frontend.user.learning_progress_view import render_achievements, render_learning_progress
 from frontend.user.roadmap_page import show_roadmap_page
 from frontend.user.technical_page import show_technical_page
 
@@ -93,7 +91,7 @@ def show_learning_center() -> None:
     with notes_tab:
         _render_notes(session_id)
     with progress_tab:
-        _render_progress(session_id, snapshot)
+        render_learning_progress(session_id, snapshot)
 
 
 def _render_overview(session_id: int, actor_user_id, snapshot: dict) -> None:
@@ -134,7 +132,7 @@ def _render_overview(session_id: int, actor_user_id, snapshot: dict) -> None:
                 f"{item['estimated_minutes']} min · {item['match_reason']}"
             )
             st.write(item["description"])
-    _render_achievements(snapshot["achievements"])
+    render_achievements(snapshot["achievements"])
 
 
 def _render_resources(session_id: int, actor_user_id) -> None:
@@ -220,17 +218,6 @@ def _save_resource_progress(
         st.rerun()
 
 
-def _render_achievements(achievements: list[dict]) -> None:
-    section("Achievements and badges", ":material/emoji_events:")
-    if not achievements:
-        empty_state("No badges yet.", "Complete tasks and resources to earn achievements.")
-        return
-    for badge in achievements:
-        st.markdown(
-            f"- **{badge['title']}** · {badge['points']} pts · {badge['description']}"
-        )
-
-
 def _render_notes(session_id: int) -> None:
     section("Study notes", ":material/note:")
     notes = list_notes(session_id, st.session_state.get("user_id"))
@@ -281,33 +268,6 @@ def _render_notes(session_id: int) -> None:
         else:
             success_toast("Note saved.")
             st.rerun()
-
-
-def _render_progress(session_id: int, snapshot: dict) -> None:
-    section("Learning progress", ":material/analytics:")
-    snapshot_analytics = get_analytics(session_id, st.session_state.get("user_id"))
-    roadmaps = list_roadmaps(session_id, st.session_state.get("user_id"))
-    total_tasks = sum(len(roadmap.tasks) for roadmap in roadmaps)
-    done_tasks = sum(
-        1 for roadmap in roadmaps for task in roadmap.tasks if task.status == "completed"
-    )
-    with get_db_context() as db:
-        assessment_count = (
-            db.query(Assessment)
-            .filter(Assessment.session_id == session_id, Assessment.status == "completed")
-            .count()
-        )
-    st.metric("Interview readiness", f"{snapshot_analytics.readiness_score:.1f}/10", border=True)
-    st.metric("Study plan tasks", f"{done_tasks}/{total_tasks}", border=True)
-    st.metric("Completed assessments", assessment_count, border=True)
-    st.metric("Questions answered", snapshot_analytics.total_answered, border=True)
-    st.metric("Activity streak", f"{snapshot['streak']} days", border=True)
-    st.metric("Learning points", snapshot["points"], border=True)
-    if total_tasks:
-        st.progress(done_tasks / total_tasks, text=f"{done_tasks} of {total_tasks} tasks complete")
-    else:
-        empty_state("Create a study plan to track task progress.")
-    _render_achievements(snapshot["achievements"])
 
 
 show_learning_center()
