@@ -23,6 +23,9 @@ from database import (
     DocumentChunk,
     EventLog,
     GeneratedReport,
+    InterviewCallParticipant,
+    InterviewCallRoom,
+    InterviewCallSignal,
     InterviewProgress,
     InterviewQuestion,
     InterviewSession,
@@ -640,6 +643,15 @@ def delete_user(user_id: int, *, actor_admin_id: int | None) -> None:
             .filter(ResumeAnalysis.session_id.in_(session_ids))
             .all()
         ]
+        call_room_ids = [
+            row.id
+            for row in db.query(InterviewCallRoom.id)
+            .filter(
+                (InterviewCallRoom.admin_user_id == user_id)
+                | (InterviewCallRoom.candidate_user_id == user_id)
+            )
+            .all()
+        ]
         job_ids = [
             row.id
             for row in db.query(JobDescription.id)
@@ -705,6 +717,18 @@ def delete_user(user_id: int, *, actor_admin_id: int | None) -> None:
             synchronize_session=False
         )
         db.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
+            synchronize_session=False
+        )
+        db.query(InterviewCallSignal).filter(
+            (InterviewCallSignal.room_id.in_(call_room_ids))
+            | (InterviewCallSignal.sender_user_id == user_id)
+            | (InterviewCallSignal.recipient_user_id == user_id)
+        ).delete(synchronize_session=False)
+        db.query(InterviewCallParticipant).filter(
+            (InterviewCallParticipant.room_id.in_(call_room_ids))
+            | (InterviewCallParticipant.user_id == user_id)
+        ).delete(synchronize_session=False)
+        db.query(InterviewCallRoom).filter(InterviewCallRoom.id.in_(call_room_ids)).delete(
             synchronize_session=False
         )
         db.query(UserSession).filter(UserSession.user_id == user_id).delete(
@@ -857,6 +881,7 @@ def bind_session_to_account(account: Account, legacy_session_id: str | None = No
                 )
                 db.add(owned)
         owned.user_id = account.id
+        owned.revoked_at = None
         db.flush()
 
         if legacy_session_id and legacy_session_id != token:
@@ -875,7 +900,34 @@ def bind_session_to_account(account: Account, legacy_session_id: str | None = No
 def owned_session_id(token: str, user_id: int | None) -> int | None:
     """Resolve a workspace token to its session id only for the matching owner."""
     with get_db_context() as db:
-        row = db.query(UserSession).filter(UserSession.session_id == token).first()
+        row = (
+            db.query(UserSession)
+            .filter(
+                UserSession.session_id == token,
+                UserSession.revoked_at.is_(None),
+            )
+            .first()
+        )
         if row is None or row.user_id != user_id:
             return None
         return cast(int, row.id)
+
+
+def revoke_session(token: str, user_id: int | None = None) -> bool:
+    """Revoke a workspace token so live-call operations stop accepting it."""
+    normalized = str(token or "").strip()
+    if not normalized:
+        return False
+    with get_db_context() as db:
+        query = db.query(UserSession).filter(
+            UserSession.session_id == normalized,
+            UserSession.revoked_at.is_(None),
+        )
+        if user_id is not None:
+            query = query.filter(UserSession.user_id == int(user_id))
+        row = query.first()
+        if row is None:
+            return False
+        row.revoked_at = datetime.now()
+        row.updated_at = row.revoked_at
+        return True

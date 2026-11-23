@@ -16,9 +16,12 @@ PAGES: dict[str, str] = {
     "interview": "frontend/user/mock_interview.py",
     "mock_interview": "frontend/user/mock_interview.py",
     "job_interview": "frontend/user/job_interview.py",
+    "ai_avatar": "frontend/user/ai_avatar_interview.py",
+    "ai_avatar_interview": "frontend/user/ai_avatar_interview.py",
     "live_webcam": "frontend/user/live_webcam_interview.py",
     "live_webcam_interview": "frontend/user/live_webcam_interview.py",
     "live_recording_history": "frontend/user/live_recording_history.py",
+    "live_interview_invitations": "frontend/user/live_interview_invitations.py",
     "report": "frontend/user/report_page.py",
     "reports": "frontend/user/report_page.py",
     "progress": "frontend/user/analytics.py",
@@ -43,6 +46,7 @@ PAGES: dict[str, str] = {
     "admin": "frontend/admin/dashboard.py",
     "admin_jobs": "frontend/admin/jobs.py",
     "admin_live_media": "frontend/admin/live_media.py",
+    "admin_live_interviews": "frontend/admin/live_interview_invitations.py",
     "admin_learning": "frontend/admin/learning.py",
 }
 
@@ -57,5 +61,12 @@ def go_to(page: str) -> None:
     if not (_PROJECT_ROOT / target).exists():
         st.error(f"Page is not available: {target}")
         return
+    if target != PAGES["live_webcam"]:
+        try:
+            from frontend.shared.live_session_cleanup import teardown_for_navigation
+
+            teardown_for_navigation()
+        except Exception:
+            pass
     st.session_state["current_page"] = page
     switch_page(target)

@@ -9,6 +9,13 @@ import streamlit as st
 
 
 def page_header(title: str, subtitle: str = "", icon: str = ":material/dashboard:") -> None:
+    if title != "AI live webcam interview":
+        try:
+            from frontend.shared.live_session_cleanup import teardown_for_navigation
+
+            teardown_for_navigation()
+        except Exception:
+            pass
     st.title(title, icon=icon)
     if subtitle:
         st.caption(subtitle)
@@ -323,6 +330,20 @@ def speak_text(text: str, key: str = "default") -> None:
   }} catch (error) {{ console.warn('Speech synthesis unavailable', error); }}
 }})();
 </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
+def stop_speech(key: str = "default") -> None:
+    stop_key = f"_speech_stopped_{key}"
+    st.session_state[stop_key] = str(time.time_ns())
+    nonce = st.session_state[stop_key]
+    st.html(
+        f"""<script>
+(function () {{
+  try {{ window.speechSynthesis.cancel(); }} catch (error) {{ console.warn('Speech stop unavailable', error); }}
+}})();
+</script><span data-avatar-speech-stop="{nonce}"></span>""",
         unsafe_allow_javascript=True,
     )
 
