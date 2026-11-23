@@ -116,12 +116,13 @@ def _render_media_item(
             st.json(item.get("metadata") or {})
 
 
-def show_live_recording_history() -> None:
-    page_header(
-        "Live recording history",
-        "Review, play, download, and delete recordings from live webcam interviews.",
-        icon=":material/video_file:",
-    )
+def show_live_recording_history(show_header: bool = True) -> None:
+    if show_header:
+        page_header(
+            "Live recording history",
+            "Review, play, download, and delete recordings from live webcam interviews.",
+            icon=":material/video_file:",
+        )
     st.session_state.setdefault(DELETE_PENDING, False)
     st.session_state.setdefault(DELETE_RECORDING_ID, None)
     st.session_state.setdefault(DELETE_CONFIRMED, False)
@@ -219,4 +220,5 @@ def show_live_recording_history() -> None:
                 st.rerun()
 
 
-show_live_recording_history()
+if __name__ == "__main__":
+    show_live_recording_history()
