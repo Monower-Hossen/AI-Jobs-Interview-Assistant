@@ -245,6 +245,20 @@ class Settings:
     live_signal_max_pending_per_room: Any = _UNSET
     live_signal_max_per_participant_per_minute: Any = _UNSET
 
+    webrtc_stun_urls: Any = _UNSET
+    webrtc_turn_urls: Any = _UNSET
+    webrtc_turn_username: Any = _UNSET
+    webrtc_turn_credential: Any = _UNSET
+    webrtc_ice_transport_policy: Any = _UNSET
+    webrtc_max_reconnect_attempts: Any = _UNSET
+    webrtc_reconnect_base_delay_seconds: Any = _UNSET
+    webrtc_video_width: Any = _UNSET
+    webrtc_video_height: Any = _UNSET
+    webrtc_video_fps: Any = _UNSET
+    webrtc_audio_echo_cancellation: Any = _UNSET
+    webrtc_audio_noise_suppression: Any = _UNSET
+    webrtc_audio_auto_gain_control: Any = _UNSET
+
     live_media_root: Any = _UNSET
     live_media_max_bytes: Any = _UNSET
     live_media_max_seconds: Any = _UNSET
@@ -558,6 +572,76 @@ class Settings:
             default=30,
             minimum=1,
             maximum=300,
+        )
+
+        self.webrtc_stun_urls = _resolve_list(
+            self.webrtc_stun_urls,
+            "WEBRTC_STUN_URLS",
+            ["stun:stun.l.google.com:19302"],
+        )
+        self.webrtc_turn_urls = _resolve_list(self.webrtc_turn_urls, "WEBRTC_TURN_URLS", [])
+        self.webrtc_turn_username = str(
+            _resolve(self.webrtc_turn_username, "WEBRTC_TURN_USERNAME", str, "")
+        ).strip()
+        self.webrtc_turn_credential = str(
+            _resolve(self.webrtc_turn_credential, "WEBRTC_TURN_CREDENTIAL", str, "")
+        ).strip()
+        self.webrtc_ice_transport_policy = str(
+            _resolve(self.webrtc_ice_transport_policy, "WEBRTC_ICE_TRANSPORT_POLICY", str, "all")
+        ).strip().lower()
+        if self.webrtc_ice_transport_policy not in {"all", "relay"}:
+            _warn_invalid(
+                "WEBRTC_ICE_TRANSPORT_POLICY", self.webrtc_ice_transport_policy, "all"
+            )
+            self.webrtc_ice_transport_policy = "all"
+        self.webrtc_max_reconnect_attempts = _resolve_number(
+            self.webrtc_max_reconnect_attempts,
+            "WEBRTC_MAX_RECONNECT_ATTEMPTS",
+            parse=int,
+            default=3,
+            minimum=0,
+            maximum=10,
+        )
+        self.webrtc_reconnect_base_delay_seconds = _resolve_number(
+            self.webrtc_reconnect_base_delay_seconds,
+            "WEBRTC_RECONNECT_BASE_DELAY_SECONDS",
+            parse=float,
+            default=2.0,
+            minimum=0.5,
+            maximum=30.0,
+        )
+        self.webrtc_video_width = _resolve_number(
+            self.webrtc_video_width,
+            "WEBRTC_VIDEO_WIDTH",
+            parse=int,
+            default=640,
+            minimum=160,
+            maximum=1920,
+        )
+        self.webrtc_video_height = _resolve_number(
+            self.webrtc_video_height,
+            "WEBRTC_VIDEO_HEIGHT",
+            parse=int,
+            default=480,
+            minimum=120,
+            maximum=1080,
+        )
+        self.webrtc_video_fps = _resolve_number(
+            self.webrtc_video_fps,
+            "WEBRTC_VIDEO_FPS",
+            parse=int,
+            default=30,
+            minimum=5,
+            maximum=60,
+        )
+        self.webrtc_audio_echo_cancellation = _resolve_bool(
+            self.webrtc_audio_echo_cancellation, "WEBRTC_AUDIO_ECHO_CANCELLATION", True
+        )
+        self.webrtc_audio_noise_suppression = _resolve_bool(
+            self.webrtc_audio_noise_suppression, "WEBRTC_AUDIO_NOISE_SUPPRESSION", True
+        )
+        self.webrtc_audio_auto_gain_control = _resolve_bool(
+            self.webrtc_audio_auto_gain_control, "WEBRTC_AUDIO_AUTO_GAIN_CONTROL", True
         )
 
         self.live_media_root = _env_path("LIVE_MEDIA_STORAGE_PATH", "storage/live_interviews")
