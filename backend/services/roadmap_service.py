@@ -36,12 +36,6 @@ Produce 5 to 8 ordered tasks. Each task needs:
 Prefer free, widely available resources. Do not invent links. Return JSON matching the schema."""
 
 
-def _weak_skills_from_report(report) -> list[str]:
-    if not report:
-        return []
-    return list(report.weaknesses[:8]) + list(report.recommended_topics[:8])
-
-
 def generate_roadmap(
     session_id: int,
     weak_skills: list[str],

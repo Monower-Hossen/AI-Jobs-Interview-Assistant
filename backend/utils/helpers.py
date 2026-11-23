@@ -1,6 +1,5 @@
 import json
 import re
-from datetime import datetime
 from typing import Any
 
 
@@ -194,59 +193,6 @@ def calculate_percentage(value: float, total: float) -> float:
     if total == 0:
         return 0.0
     return round((value / total) * 100, 2)
-
-
-def format_score(score: float, max_score: float = 10.0) -> str:
-    return f"{score:.1f}/{max_score:.1f}"
-
-
-def get_score_category(score: float) -> str:
-    if score >= 9:
-        return "Excellent"
-    elif score >= 7:
-        return "Good"
-    elif score >= 5:
-        return "Average"
-    elif score >= 3:
-        return "Below Average"
-    else:
-        return "Needs Improvement"
-
-
-def format_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    elif seconds < 3600:
-        minutes = seconds / 60
-        return f"{minutes:.1f}m"
-    else:
-        hours = seconds / 3600
-        return f"{hours:.1f}h"
-
-
-def generate_session_id() -> str:
-    import uuid
-
-    return str(uuid.uuid4())[:8]
-
-
-def get_current_timestamp() -> str:
-    return datetime.now().isoformat()
-
-
-def parse_timestamp(timestamp_str: str) -> datetime | None:
-    formats = [
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-    ]
-    for fmt in formats:
-        try:
-            return datetime.strptime(timestamp_str, fmt)
-        except ValueError:
-            continue
-    return None
 
 
 def merge_dicts(dict1: dict, dict2: dict) -> dict:
