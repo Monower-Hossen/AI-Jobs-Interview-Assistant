@@ -241,6 +241,10 @@ class Settings:
 
     database_path: Any = _UNSET
 
+    live_signal_poll_seconds: Any = _UNSET
+    live_signal_max_pending_per_room: Any = _UNSET
+    live_signal_max_per_participant_per_minute: Any = _UNSET
+
     live_media_root: Any = _UNSET
     live_media_max_bytes: Any = _UNSET
     live_media_max_seconds: Any = _UNSET
@@ -274,6 +278,16 @@ class Settings:
     resource_critical_available_mb: Any = _UNSET
     resource_allow_concurrent_heavy_ml: Any = _UNSET
     resource_low_memory_mode: Any = _UNSET
+    resource_lease_heartbeat_seconds: Any = _UNSET
+    resource_max_active_leases: Any = _UNSET
+    resource_cpu_admission_threshold_percent: Any = _UNSET
+    resource_task_whisper_transcription_limit: Any = _UNSET
+    resource_task_video_processing_limit: Any = _UNSET
+    resource_task_embedding_generation_limit: Any = _UNSET
+    resource_task_live_recording_limit: Any = _UNSET
+    resource_task_llm_inference_limit: Any = _UNSET
+    resource_task_video_analysis_limit: Any = _UNSET
+    resource_task_audio_analysis_limit: Any = _UNSET
     allow_cuda_inference: Any = _UNSET
 
     def __post_init__(self) -> None:
@@ -450,6 +464,59 @@ class Settings:
         self.resource_low_memory_mode = _resolve_bool(
             self.resource_low_memory_mode, "RESOURCE_LOW_MEMORY_MODE", False
         )
+        self.resource_lease_heartbeat_seconds = _resolve_number(
+            self.resource_lease_heartbeat_seconds,
+            "RESOURCE_LEASE_HEARTBEAT_SECONDS",
+            parse=int,
+            default=300,
+            minimum=30,
+            maximum=3600,
+        )
+        self.resource_max_active_leases = _resolve_number(
+            self.resource_max_active_leases,
+            "RESOURCE_MAX_ACTIVE_LEASES",
+            parse=int,
+            default=4,
+            minimum=1,
+            maximum=8,
+        )
+        self.resource_cpu_admission_threshold_percent = _resolve_number(
+            self.resource_cpu_admission_threshold_percent,
+            "RESOURCE_CPU_ADMISSION_THRESHOLD_PERCENT",
+            parse=float,
+            default=85.0,
+            minimum=10.0,
+            maximum=100.0,
+        )
+        task_budget_defaults = {
+            "resource_task_whisper_transcription_limit": 1,
+            "resource_task_video_processing_limit": 1,
+            "resource_task_embedding_generation_limit": 1,
+            "resource_task_live_recording_limit": 1,
+            "resource_task_llm_inference_limit": 4,
+            "resource_task_video_analysis_limit": 1,
+            "resource_task_audio_analysis_limit": 2,
+        }
+        for field_name, default_limit in task_budget_defaults.items():
+            setattr(
+                self,
+                field_name,
+                _resolve_number(
+                    getattr(self, field_name),
+                    field_name.upper(),
+                    parse=int,
+                    default=default_limit,
+                    minimum=1,
+                    maximum=8,
+                ),
+            )
+        if self.resource_low_memory_mode:
+            self.resource_max_active_leases = min(int(self.resource_max_active_leases), 2)
+            self.resource_cpu_admission_threshold_percent = min(
+                float(self.resource_cpu_admission_threshold_percent), 70.0
+            )
+            for field_name in task_budget_defaults:
+                setattr(self, field_name, 1)
         self.allow_cuda_inference = _resolve_bool(
             self.allow_cuda_inference, "ALLOW_CUDA_INFERENCE", False
         )
@@ -467,6 +534,31 @@ class Settings:
         self.vector_store_type = str(_resolve(self.vector_store_type, "VECTOR_STORE_TYPE", str, "faiss")).strip().lower() or "faiss"
         self.vector_store_path = _env_path("VECTOR_STORE_PATH", "data/vector_store")
         self.database_path = _env_path("DATABASE_PATH", "data/interview_assistant.db")
+
+        self.live_signal_poll_seconds = _resolve_number(
+            self.live_signal_poll_seconds,
+            "LIVE_SIGNAL_POLL_SECONDS",
+            parse=int,
+            default=3,
+            minimum=1,
+            maximum=30,
+        )
+        self.live_signal_max_pending_per_room = _resolve_number(
+            self.live_signal_max_pending_per_room,
+            "LIVE_SIGNAL_MAX_PENDING_PER_ROOM",
+            parse=int,
+            default=100,
+            minimum=10,
+            maximum=1000,
+        )
+        self.live_signal_max_per_participant_per_minute = _resolve_number(
+            self.live_signal_max_per_participant_per_minute,
+            "LIVE_SIGNAL_MAX_PER_PARTICIPANT_PER_MINUTE",
+            parse=int,
+            default=30,
+            minimum=1,
+            maximum=300,
+        )
 
         self.live_media_root = _env_path("LIVE_MEDIA_STORAGE_PATH", "storage/live_interviews")
         self.live_media_max_bytes = _resolve_number(
