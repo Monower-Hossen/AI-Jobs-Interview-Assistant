@@ -9,7 +9,14 @@ from services import interview_service
 from services.auth_service import AuthError, owned_session_id
 from services.report_generator import render_interview_pdf
 
-from frontend.shared.components import empty_state, error_state, kpi_row, page_header, section
+from frontend.shared.components import (
+    empty_state,
+    error_state,
+    kpi_row,
+    page_header,
+    section,
+    show_improvement_plan,
+)
 from frontend.shared.navigation import go_to
 
 _CATEGORY_LABELS = {
@@ -351,19 +358,6 @@ def show_list_section(title, items):
             st.markdown(f"- {item}")
     else:
         st.caption(f"No {title.lower()} recorded")
-
-
-def show_improvement_plan(title, plan):
-    if not plan:
-        st.caption(f"No {title} available")
-        return
-    for item in plan:
-        if isinstance(item, dict):
-            with st.expander(f"Day {item.get('day', '?')}: {item.get('focus', 'Focus')}"):
-                st.write(f"**Activity:** {item.get('activity', 'N/A')}")
-                st.write(f"**Estimated hours:** {item.get('estimated_hours', 'N/A')}")
-                for resource in item.get("resources") or []:
-                    st.markdown(f"- {resource}")
 
 
 def show_question_details(interview_id, session_id) -> None:

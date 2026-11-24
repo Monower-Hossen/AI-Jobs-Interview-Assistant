@@ -42,8 +42,8 @@ def _preparation_status(snapshot: DashboardSnapshot | None) -> str:
     analytics = snapshot.analytics
     if analytics.total_interviews == 0:
         if snapshot.resume_score is not None:
-            return "Resume analyzed. Start a mock interview to build your readiness baseline."
-        return "Start a mock interview or analyze a resume to build your preparation baseline."
+            return "Resume analyzed. Start a job interview to build your readiness baseline."
+        return "Start a job interview or analyze a resume to build your preparation baseline."
     parts = [
         f"{analytics.completed_interviews} of {analytics.total_interviews} interviews completed"
     ]
@@ -67,7 +67,7 @@ def _render_header(account, snapshot: DashboardSnapshot | None) -> None:
             width="stretch",
             key="dashboard_start_interview",
         ):
-            go_to("interview_setup")
+            go_to("job_interview")
 
 
 def _render_primary_kpis(snapshot: DashboardSnapshot) -> None:
@@ -225,71 +225,38 @@ def _render_performance_overview(snapshot: DashboardSnapshot) -> None:
 
 def _render_continue_preparation(snapshot: DashboardSnapshot | None) -> None:
     section("Continue preparation", ":material/bolt:")
-    with st.container(border=True):
-        with st.container(horizontal=True, wrap=True):
-            if st.button(
-                "Continue mock interview",
-                icon=":material/smart_toy:",
-                width="content",
-                key="dashboard_continue_mock",
-            ):
-                go_to("interview_setup")
-            if st.button(
-                "Resume analysis",
-                icon=":material/description:",
-                width="content",
-                key="dashboard_resume_analysis",
-            ):
-                go_to("resume")
-            if st.button(
-                "Job preparation",
-                icon=":material/work:",
-                width="content",
-                key="dashboard_job_preparation",
-            ):
-                go_to("job")
-            if st.button(
-                "Continue learning",
-                icon=":material/school:",
-                width="content",
-                key="dashboard_continue_learning",
-            ):
-                go_to("learning_center")
-        progress = snapshot.learning_progress if snapshot is not None else {}
-        if int(progress.get("total_tasks") or 0):
-            st.caption(f"Study plan: {progress.get('summary')}")
-        else:
-            st.caption("No study plan yet. Create one in the Learning Center to track progress.")
-
-
-def _render_recent_activity(snapshot: DashboardSnapshot) -> None:
-    section("Recent activity", ":material/history:")
-    with st.container(border=True):
-        rows = [
-            {
-                "Interview": row.get("Type") or "Practice",
-                "Score": _score_text(row.get("Score")),
-                "Status": str(row.get("Status") or "").replace("_", " ").title(),
-                "Date": row.get("Date") or "",
-            }
-            for row in (snapshot.analytics.recent_sessions or [])[:6]
-        ]
-        if rows:
-            st.dataframe(
-                pd.DataFrame(rows),
-                hide_index=True,
-                width="stretch",
-                alt="Recent interviews with scores, status and dates",
-            )
-        else:
-            st.caption("No interviews recorded yet. Start a mock interview to see activity here.")
+    with (
+        st.container(border=True),
+        st.container(horizontal=True, wrap=True),
+    ):
         if st.button(
-            "Open history",
-            icon=":material/history:",
+            "Continue job interview",
+            icon=":material/videocam:",
             width="content",
-            key="dashboard_open_history",
+            key="dashboard_continue_job",
         ):
-            go_to("history")
+            go_to("job_interview")
+        if st.button(
+            "Resume analysis",
+            icon=":material/description:",
+            width="content",
+            key="dashboard_resume_analysis",
+        ):
+            go_to("resume")
+        if st.button(
+            "Job preparation",
+            icon=":material/work:",
+            width="content",
+            key="dashboard_job_preparation",
+        ):
+            go_to("job")
+        if st.button(
+            "Continue learning",
+            icon=":material/school:",
+            width="content",
+            key="dashboard_continue_learning",
+        ):
+            go_to("learning_center")
 
 
 def _render_improvement_plan(plan: dict) -> None:
@@ -422,14 +389,13 @@ def show_dashboard() -> None:
     if not has_activity:
         empty_state(
             "No activity yet",
-            "Analyze a resume or start a mock interview to build your overview.",
+            "Analyze a resume or start a job interview to build your overview.",
         )
 
     _render_primary_kpis(snapshot)
     _render_secondary_metrics(snapshot)
     _render_performance_overview(snapshot)
     _render_continue_preparation(snapshot)
-    _render_recent_activity(snapshot)
     _render_recommendations(snapshot)
     _render_upcoming_activities(snapshot)
     st.caption("Built from saved workspace records only. No demo data.")

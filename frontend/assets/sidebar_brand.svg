@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="32" viewBox="0 0 280 32" role="img" aria-label="AI Jobs Interview Assistant">
+  <title>AI Jobs Interview Assistant</title>
+  <g fill="none" stroke="#60A5FA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="8" width="22" height="16" rx="3"/>
+    <path d="M9 8V6.5A2.5 2.5 0 0 1 11.5 4h3A2.5 2.5 0 0 1 17 6.5V8"/>
+    <path d="M2 14h22"/>
+  </g>
+  <text x="34" y="21" font-family="Inter, Segoe UI, system-ui, sans-serif" font-size="24" font-weight="800" letter-spacing="-0.4" textLength="236" lengthAdjust="spacingAndGlyphs" fill="#F8FAFC"><tspan fill="#F8FAFC">AI Jobs </tspan><tspan fill="#93C5FD">Interview Assistant</tspan></text>
+</svg>

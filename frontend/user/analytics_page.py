@@ -91,7 +91,7 @@ def show_analytics_page() -> None:
     # type: ignore[list-item]
 
     if snapshot.total_interviews == 0:
-        empty_state("No interview records yet.", "Complete a mock interview to unlock analytics.")
+        empty_state("No interview records yet.", "Complete a job interview to unlock analytics.")
         if st.button("Start an interview", type="primary", width="stretch"):
             go_to("interview_setup")
         return
@@ -148,7 +148,7 @@ def show_analytics_page() -> None:
 
     # Weekly activity view
     if snapshot.total_interviews > 0 and snapshot.completed_interviews > 0:
-        section("Weekly activity", ":material/calendar:")
+        section("Weekly activity", ":material/calendar_month:")
         today = datetime.now(tz=UTC).astimezone().date()
         weekly_rows = []
         for offset in range(6, -1, -1):

@@ -763,18 +763,6 @@ def get_learning_snapshot(session_id: int, actor_user_id: int | None) -> dict[st
     }
 
 
-def get_achievements(session_id: int, actor_user_id: int | None) -> list[dict[str, Any]]:
-    owned_session_id = _owned_session(session_id, actor_user_id)
-    with get_readonly_db() as db:
-        rows = (
-            db.query(UserAchievement)
-            .filter(UserAchievement.session_id == owned_session_id)
-            .order_by(UserAchievement.earned_at.desc())
-            .all()
-        )
-    return [_achievement_dict(row) for row in rows]
-
-
 def list_notifications(
     session_id: int,
     actor_user_id: int | None,

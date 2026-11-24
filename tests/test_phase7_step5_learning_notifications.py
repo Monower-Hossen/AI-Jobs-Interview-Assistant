@@ -119,6 +119,19 @@ def _seed_roadmap(learning_db, *, created_at=None) -> tuple[int, int]:
         return int(first.id), int(second.id)
 
 
+def test_list_roadmaps_preloads_tasks_after_session_detach(learning_db):
+    from services.roadmap_service import list_roadmaps
+
+    _seed_roadmap(learning_db)
+    roadmaps = list_roadmaps(learning_db["session1"], learning_db["user1"])
+
+    assert len(roadmaps) == 1
+    assert [task.title for task in roadmaps[0].tasks] == [
+        "Review functions",
+        "Practice debugging",
+    ]
+
+
 def test_learning_notification_tables_exist(learning_db):
     from database.db import engine
     from sqlalchemy import inspect

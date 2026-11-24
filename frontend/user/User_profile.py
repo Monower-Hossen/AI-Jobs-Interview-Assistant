@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+import html
+
 import streamlit as st
-from database import ResumeAnalysis, get_db_context
 from services.auth_service import AuthError, get_account, owned_session_id
+from services.career_service import load_latest_resume
 from services.preferences_service import get_user_preferences, update_user_preferences
 from services.profile_service import (
     get_profile_recommendations,
@@ -8,15 +12,7 @@ from services.profile_service import (
     update_user_profile,
 )
 
-from frontend.shared.change_password import render_password_change_form
-from frontend.shared.components import (
-    empty_state,
-    error_state,
-    kpi_row,
-    page_header,
-    section,
-    success_toast,
-)
+from frontend.shared.components import error_state, kpi_row, page_header, section, success_toast
 from frontend.shared.navigation import go_to
 
 DIFFICULTIES = ("easy", "medium", "hard")
@@ -40,6 +36,92 @@ _INTERVIEW_FORM_KEYS = (
     "profile_voice_enabled",
     "profile_preferred_categories",
 )
+_TABS_KEY = "profile_hub_active_section"
+_TAB_OVERVIEW = ":material/grid_view: Overview"
+_TAB_PROFESSIONAL = ":material/badge: Professional profile"
+_TAB_INTERVIEW = ":material/target: Interview profile"
+_TAB_LABELS = (_TAB_OVERVIEW, _TAB_PROFESSIONAL, _TAB_INTERVIEW)
+_SECTION_DETAILS = {
+    "Profile basics": "Your name, professional headline, and contact number.",
+    "Career focus": "Career objective and the roles you want to target.",
+    "Skills and interests": "Core skills and the technical areas you want to focus on.",
+    "Background": "Education and work experience history.",
+    "Profile notes": "Extra context that shapes your interview guidance.",
+}
+_SECTION_SLUGS = {
+    "Profile basics": "basics",
+    "Career focus": "focus",
+    "Skills and interests": "skills",
+    "Background": "background",
+    "Profile notes": "notes",
+}
+
+_PROFILE_CSS = """
+<style>
+.profile-hub-hero {
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.18) 0%, rgba(59, 130, 246, 0.07) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 18px;
+  padding: 1.25rem 1.4rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+.profile-hub-hero-top {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.profile-hub-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #ffffff;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.profile-hub-name {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: inherit;
+}
+.profile-hub-meta {
+  margin-top: 0.2rem;
+  font-size: 0.875rem;
+  opacity: 0.78;
+}
+.profile-hub-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.profile-hub-badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.18);
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.profile-hub-headline {
+  margin-top: 0.85rem;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+@media (max-width: 640px) {
+  .profile-hub-hero { padding: 1rem; }
+  .profile-hub-avatar { width: 52px; height: 52px; font-size: 1.1rem; }
+  .profile-hub-name { font-size: 1.15rem; }
+}
+</style>
+"""
 
 
 def _workspace_id() -> int | None:
@@ -59,76 +141,298 @@ def _discard_widgets(keys: tuple[str, ...]) -> None:
         st.session_state.pop(key, None)
 
 
-def show_user_profile() -> None:
-    account = st.session_state.get("account")
-    if not account:
-        st.error("No account found. Please sign in.", icon=":material/error:")
-        return
-
-    page_header(
-        "My profile", "Manage your personal, interview and account details", ":material/person:"
-    )
-    user_id = int(account.id)
-    try:
-        profile = get_user_profile(user_id, user_id)
-        preferences = get_user_preferences(user_id, user_id)
-        recommendations = get_profile_recommendations(user_id, user_id)
-    except (AuthError, ValueError) as exc:
-        error_state("Profile could not be loaded.", str(exc))
-        return
-
-    completion = profile["completion"]
-    kpi_row(
-        [
-            ("Profile completion", f"{completion['percent']}%", None),
-            ("Completed sections", f"{completion['completed']}/{completion['total']}", None),
-        ]
-    )
-
-    overview_tab, professional_tab, interview_tab, security_tab = st.tabs(
-        ["Overview", "Professional profile", "Interview profile", "Security"]
-    )
-    with overview_tab:
-        _render_overview(account, profile, completion, recommendations)
-    with professional_tab:
-        _render_professional_form(user_id, profile)
-    with interview_tab:
-        _render_interview_profile(user_id, preferences)
-    with security_tab:
-        _render_security(user_id)
+def _request_tab(label: str) -> None:
+    st.session_state["profile_requested_section"] = label
+    st.rerun()
 
 
-def _render_overview(account, profile: dict, completion: dict, recommendations: list[dict]) -> None:
-    with st.container(border=True):
-        st.markdown(f"**Name:** {account.full_name}")
-        st.markdown(f"**Email:** {account.email}")
-        st.markdown(f"**Username:** {getattr(account, 'username', None) or 'not set'}")
-        st.markdown(f"**Role:** {account.role.title()}")
-        st.markdown(f"**Headline:** {profile['headline'] or 'not set'}")
+def _initials(account) -> str:
+    full_name = str(getattr(account, "full_name", "") or "").strip()
+    parts = [part for part in full_name.replace("_", " ").split() if part]
+    if parts:
+        return "".join(part[0] for part in parts[:2]).upper()
+    fallback = str(getattr(account, "username", "") or getattr(account, "email", "") or "").strip()
+    return fallback[:1].upper() if fallback else "?"
 
+
+def _render_hero(account, profile: dict, completion: dict) -> None:
+    name = html.escape(str(getattr(account, "full_name", "") or "Your name"))
+    username = html.escape(str(getattr(account, "username", "") or ""))
+    email = html.escape(str(getattr(account, "email", "") or ""))
+    role = html.escape(str(getattr(account, "role", "user") or "user").title())
+    headline = html.escape(profile["headline"] or "Add your professional headline")
+    handle = f"@{username} · {email}" if username else email
+    initials = html.escape(_initials(account))
+
+    detail_col, action_col = st.columns([5, 1], vertical_alignment="center")
+    with detail_col:
+        st.html(f"""
+            <div class="profile-hub-hero">
+              <div class="profile-hub-hero-top">
+                <div class="profile-hub-avatar">{initials}</div>
+                <div>
+                  <div class="profile-hub-name">{name}</div>
+                  <div class="profile-hub-meta">{handle}</div>
+                  <div class="profile-hub-badges">
+                    <span class="profile-hub-badge">{role}</span>
+                    <span class="profile-hub-badge">{completion['percent']}% complete</span>
+                  </div>
+                </div>
+              </div>
+              <div class="profile-hub-headline">{headline}</div>
+            </div>
+            """)
+        st.progress(
+            completion["percent"] / 100,
+            text=f"Profile completion · {completion['percent']}%",
+        )
+    with action_col:
+        if st.button(
+            "Edit profile",
+            key="profile_hero_edit",
+            icon=":material/edit:",
+            width="stretch",
+        ):
+            _request_tab(_TAB_PROFESSIONAL)
+
+
+def _render_completion_tracker(completion: dict) -> None:
     section("Profile completion", ":material/fact_check:")
-    st.progress(completion["percent"] / 100)
-    for label, done in completion["checks"].items():
-        st.markdown(f"- {'Done' if done else 'To do'} · {label}")
-    if completion["missing"]:
-        st.caption("Complete the remaining sections for more tailored guidance.")
+    with st.container(border=True):
+        st.progress(
+            completion["percent"] / 100,
+            text=f"{completion['completed']} of {completion['total']} sections complete "
+            f"· {completion['percent']}%",
+        )
+        for label, done in completion["checks"].items():
+            status_col, detail_col, action_col = st.columns(
+                [1, 5, 1], vertical_alignment="center", gap="small"
+            )
+            status_col.markdown(
+                ":material/check_circle:" if done else ":material/radio_button_unchecked:"
+            )
+            done_badge = ":green-badge[Done]" if done else ":orange-badge[To do]"
+            detail_col.markdown(f"**{label}**  {done_badge}")
+            detail_col.caption(_SECTION_DETAILS.get(label, ""))
+            slug = _SECTION_SLUGS.get(label, "section")
+            if action_col.button(
+                "Edit",
+                key=f"profile_section_edit_{slug}",
+                icon=":material/edit:",
+                width="stretch",
+            ):
+                _request_tab(_TAB_PROFESSIONAL)
 
-    section("Recommended next steps", ":material/lightbulb:")
-    if not recommendations:
-        empty_state("Your profile is ready.", "Keep it current as your goals change.")
+
+def _recommendation_cards(
+    profile: dict, preferences: dict, completion: dict, recommendations: list[dict]
+) -> list[dict]:
+    cards: list[dict] = []
+    if not profile["skills"]:
+        cards.append(
+            {
+                "id": "skills",
+                "icon": ":material/psychology:",
+                "title": "Add your core skills",
+                "detail": "List the skills you want interview questions to probe.",
+                "action": "Add skills",
+                "tab": _TAB_PROFESSIONAL,
+            }
+        )
+    if not profile["technical_interests"]:
+        cards.append(
+            {
+                "id": "interests",
+                "icon": ":material/explore:",
+                "title": "Choose technical interests",
+                "detail": "Add focus areas so practice and learning stay aligned with your goals.",
+                "action": "Choose interests",
+                "tab": _TAB_PROFESSIONAL,
+            }
+        )
+    categories = list(preferences.get("preferred_interview_categories") or [])
+    if not categories:
+        cards.append(
+            {
+                "id": "types",
+                "icon": ":material/event:",
+                "title": "Set preferred interview types",
+                "detail": "Choose the interview formats you want to see first.",
+                "action": "Set preferences",
+                "tab": _TAB_INTERVIEW,
+            }
+        )
     else:
-        for recommendation in recommendations:
-            with st.container(border=True):
-                st.markdown(f"**{recommendation['title']}**")
-                st.caption(recommendation["detail"])
-                if st.button(
-                    "Open",
-                    key=f"recommendation_{recommendation['target_page']}_{recommendation['title']}",
-                    icon=":material/arrow_forward:",
-                    width="stretch",
-                ):
-                    go_to(recommendation["target_page"])
-    _render_resume_snapshot()
+        practice = next(
+            (item for item in recommendations if item.get("title", "").startswith("Practice ")),
+            None,
+        )
+        if practice:
+            cards.append(
+                {
+                    "id": "practice",
+                    "icon": ":material/record_voice_over:",
+                    "title": practice["title"],
+                    "detail": practice["detail"],
+                    "action": "Start practice",
+                    "page": "interview",
+                }
+            )
+    if completion["percent"] < 100:
+        cards.append(
+            {
+                "id": "finish",
+                "icon": ":material/auto_awesome:",
+                "title": "Finish your profile",
+                "detail": "Complete the remaining profile sections for more tailored guidance.",
+                "action": "Complete profile",
+                "tab": _TAB_PROFESSIONAL,
+            }
+        )
+    else:
+        study = next(
+            (item for item in recommendations if item.get("title", "").startswith("Study ")),
+            None,
+        )
+        if study:
+            cards.append(
+                {
+                    "id": "study",
+                    "icon": ":material/school:",
+                    "title": study["title"],
+                    "detail": study["detail"],
+                    "action": "Open learning plan",
+                    "page": "learning_roadmap",
+                }
+            )
+    return cards[:4]
+
+
+def _render_recommendations(
+    profile: dict, preferences: dict, completion: dict, recommendations: list[dict]
+) -> None:
+    cards = _recommendation_cards(profile, preferences, completion, recommendations)
+    if not cards:
+        with st.container(border=True):
+            st.markdown(":material/check_circle: **Your profile is ready.**")
+            st.caption("Keep it current as your goals change.")
+        return
+
+    columns = st.columns(2, gap="medium")
+    for index, card in enumerate(cards):
+        with columns[index % 2], st.container(border=True):
+            st.markdown(f"**{card['icon']} {card['title']}**")
+            st.caption(card["detail"])
+            if st.button(
+                card["action"],
+                key=f"profile_recommendation_{card['id']}",
+                icon=":material/arrow_forward:",
+                width="stretch",
+            ):
+                if card.get("tab"):
+                    _request_tab(card["tab"])
+                else:
+                    go_to(card["page"])
+
+
+def _resume_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _render_resume_snapshot(resume) -> None:
+    section("Resume snapshot", ":material/description:")
+    if resume is None:
+        with st.container(border=True):
+            st.markdown(":material/upload_file: **No resume analysed yet**")
+            st.caption("Upload and analyze a resume to see your score, skills, and education here.")
+            if st.button(
+                "Upload resume",
+                key="profile_resume_upload",
+                icon=":material/upload:",
+                type="primary",
+                width="stretch",
+            ):
+                go_to("resume")
+        return
+
+    analysis = resume.analysis
+    score = max(0.0, min(float(resume.scores.overall or 0), 100.0))
+    education = [
+        text
+        for text in (
+            " · ".join(
+                part
+                for part in (
+                    _resume_text(getattr(item, "degree", "")),
+                    _resume_text(getattr(item, "institution", "")),
+                )
+                if part
+            )
+            for item in analysis.education
+        )
+        if text
+    ]
+    experience = [
+        text
+        for text in (
+            " · ".join(
+                part
+                for part in (
+                    _resume_text(getattr(item, "title", "")),
+                    _resume_text(getattr(item, "company", "")),
+                )
+                if part
+            )
+            for item in analysis.experience
+        )
+        if text
+    ]
+    skills = [skill for skill in (_resume_text(item) for item in analysis.skills) if skill]
+
+    with st.container(border=True):
+        file_col, score_col = st.columns([3, 2], vertical_alignment="center")
+        with file_col:
+            st.markdown(f":material/picture_as_pdf: **{resume.file_name}**")
+            saved = resume.created_at.strftime("%d %b %Y") if resume.created_at else "Saved record"
+            st.caption(f"Latest analysis · {saved}")
+        with score_col:
+            st.progress(score / 100, text=f"Resume score · {score:.0f}/100")
+
+        st.markdown("**Education**")
+        st.caption(" · ".join(education) if education else "Not extracted")
+        st.markdown("**Experience**")
+        st.caption(" · ".join(experience) if experience else "Not extracted")
+        st.markdown("**Skills**")
+        if skills:
+            with st.container(horizontal=True, wrap=True, gap="small"):
+                for skill in skills[:16]:
+                    st.badge(skill, color="blue")
+            if len(skills) > 16:
+                st.caption(f"+{len(skills) - 16} more skills")
+        else:
+            st.caption("Not extracted")
+
+        if st.button(
+            "Open resume analyzer",
+            key="profile_resume_open",
+            icon=":material/open_in_new:",
+            width="stretch",
+        ):
+            go_to("resume")
+
+
+def _render_overview(
+    account,
+    profile: dict,
+    preferences: dict,
+    completion: dict,
+    recommendations: list[dict],
+    resume,
+) -> None:
+    _render_completion_tracker(completion)
+    section("Recommended next steps", ":material/lightbulb:")
+    _render_recommendations(profile, preferences, completion, recommendations)
+    _render_resume_snapshot(resume)
 
 
 def _render_professional_form(user_id: int, profile: dict) -> None:
@@ -149,9 +453,7 @@ def _render_professional_form(user_id: int, profile: dict) -> None:
     with st.form("user_profile_details_form", border=True):
         col1, col2 = st.columns(2)
         with col1:
-            full_name = st.text_input(
-                "Full name", max_chars=200, key="profile_full_name"
-            )
+            full_name = st.text_input("Full name", max_chars=200, key="profile_full_name")
             phone = st.text_input("Phone number", max_chars=50, key="profile_phone")
             headline = st.text_input(
                 "Professional headline",
@@ -283,64 +585,64 @@ def _render_interview_profile(user_id: int, preferences: dict) -> None:
             success_toast("Interview profile saved.")
 
 
-def _render_security(user_id: int) -> None:
-    section("Change password", ":material/key:")
-    st.caption("Choose a new password at any time. Your current password is required.")
-    render_password_change_form(
-        user_id,
-        form_id="profile_password_form",
-        key_prefix="profile",
-        submit_label="Update password",
-    )
-
-    section("Account security", ":material/shield:")
-    st.caption(
-        "Each account has an isolated workspace. Passwords are salted and hashed; "
-        "they are never displayed or stored in plain text."
-    )
-    if st.button(
-        "Manage notifications and activity",
-        icon=":material/settings:",
-        width="stretch",
-        key="profile_open_account_settings",
-    ):
-        go_to("account_settings")
-
-
-def _render_resume_snapshot() -> None:
-    section("Resume snapshot", ":material/description:")
-    workspace_id = _workspace_id()
-    if not workspace_id:
-        empty_state("No workspace found.")
+def show_user_profile() -> None:
+    account = st.session_state.get("account")
+    if not account:
+        st.error("No account found. Please sign in.", icon=":material/error:")
         return
-    with get_db_context() as db:
-        resume = (
-            db.query(ResumeAnalysis)
-            .filter(ResumeAnalysis.session_id == workspace_id)
-            .order_by(ResumeAnalysis.created_at.desc(), ResumeAnalysis.id.desc())
-            .first()
-        )
-        snapshot = None
-        if resume:
-            snapshot = {
-                "File": resume.file_name,
-                "Score": (
-                    f"{resume.overall_resume_score:.0f}/100"
-                    if resume.overall_resume_score is not None
-                    else "N/A"
-                ),
-                "Education": ", ".join(
-                    str(item.get("degree", "")) for item in (resume.education or []) if item
-                )
-                or "Not extracted",
-                "Skills": ", ".join(list(resume.skills or [])[:12]) or "Not extracted",
-                "Experience": ", ".join(
-                    str(item.get("title", "")) for item in (resume.experience or []) if item
-                )
-                or "Not extracted",
-            }
-    if snapshot:
-        for label, value in snapshot.items():
-            st.markdown(f"**{label}:** {value}")
-    else:
-        empty_state("No resume analysed yet.", "Analyze a resume to populate this section.")
+
+    page_header(
+        "My profile",
+        "Your career hub for profile progress and interview preferences",
+        ":material/person:",
+    )
+    st.html(_PROFILE_CSS)
+    user_id = int(account.id)
+    try:
+        profile = get_user_profile(user_id, user_id)
+        preferences = get_user_preferences(user_id, user_id)
+        recommendations = get_profile_recommendations(user_id, user_id)
+    except (AuthError, ValueError) as exc:
+        error_state("Profile could not be loaded.", str(exc))
+        return
+
+    workspace_id = _workspace_id()
+    resume = None
+    try:
+        if workspace_id:
+            resume = load_latest_resume(workspace_id, user_id)
+    except (AuthError, ValueError) as exc:
+        error_state("Resume snapshot could not be loaded.", str(exc))
+
+    completion = profile["completion"]
+    requested_tab = st.session_state.pop("profile_requested_section", None)
+    if requested_tab in _TAB_LABELS:
+        st.session_state[_TABS_KEY] = requested_tab
+    if st.session_state.get(_TABS_KEY) not in _TAB_LABELS:
+        st.session_state[_TABS_KEY] = _TAB_OVERVIEW
+
+    _render_hero(account, profile, completion)
+    score = f"{resume.scores.overall:.0f}/100" if resume is not None else "—"
+    kpi_row(
+        [
+            ("Profile completion", f"{completion['percent']}%", None, ":material/fact_check:"),
+            (
+                "Completed sections",
+                f"{completion['completed']}/{completion['total']}",
+                None,
+                ":material/checklist:",
+            ),
+            ("Resume score", score, None, ":material/score:"),
+            ("Account role", str(account.role or "user").title(), None, ":material/shield:"),
+        ]
+    )
+
+    overview_tab, professional_tab, interview_tab = st.tabs(
+        list(_TAB_LABELS), key=_TABS_KEY, on_change="rerun"
+    )
+    with overview_tab:
+        _render_overview(account, profile, preferences, completion, recommendations, resume)
+    with professional_tab:
+        _render_professional_form(user_id, profile)
+    with interview_tab:
+        _render_interview_profile(user_id, preferences)

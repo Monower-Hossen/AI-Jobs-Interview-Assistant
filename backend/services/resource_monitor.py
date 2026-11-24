@@ -270,7 +270,7 @@ class _ResourceLeaseManager:
             if float(available) <= required_mb:
                 return AdmissionRejection(
                     AdmissionRejectionReason.MEMORY_LOW,
-                    "Available system memory is critically low. Try again after closing other apps or use low-memory mode.",
+                    "Available system memory is critically low. Close other apps or wait for other heavy work to finish, then retry.",
                 )
 
             cpu_percent = getattr(snapshot, "cpu_percent", None)

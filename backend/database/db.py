@@ -93,6 +93,33 @@ _ADD_COLUMNS: dict[str, dict[str, str]] = {
         "learning_preferences": "TEXT DEFAULT '{}'",
         "notification_preferences": "TEXT DEFAULT '{}'",
     },
+    "learning_roadmaps": {
+        "summary": "TEXT DEFAULT ''",
+        "career_target": "TEXT DEFAULT ''",
+        "existing_skills": "TEXT DEFAULT '[]'",
+        "skill_level": "TEXT DEFAULT 'intermediate'",
+        "hours_per_day": "REAL DEFAULT 1.0",
+        "duration_weeks": "INTEGER DEFAULT 4",
+        "status": "TEXT DEFAULT 'active'",
+        "phases": "TEXT DEFAULT '[]'",
+        "skill_gap": "TEXT DEFAULT '{}'",
+        "recommendations": "TEXT DEFAULT '[]'",
+        "topic_mastery": "TEXT DEFAULT '{}'",
+        "generation_fingerprint": "TEXT",
+    },
+    "learning_tasks": {
+        "task_type": "TEXT DEFAULT 'daily'",
+        "week_number": "INTEGER",
+        "day_number": "INTEGER",
+        "objective": "TEXT DEFAULT ''",
+        "estimated_minutes": "INTEGER DEFAULT 30",
+        "priority": "TEXT DEFAULT 'medium'",
+    },
+    "assessments": {
+        "roadmap_id": "INTEGER REFERENCES learning_roadmaps(id) ON DELETE CASCADE",
+        "week_number": "INTEGER",
+        "question_count": "INTEGER DEFAULT 0",
+    },
 }
 
 

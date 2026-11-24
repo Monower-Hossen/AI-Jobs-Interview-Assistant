@@ -296,7 +296,7 @@ def test_unified_page_renders_all_sections(unified_history_db, monkeypatch, dete
     assert not app.exception, [str(item.value) for item in app.exception]
     headings = _subheads(app)
     for heading in (
-        "AI Avatar Mock Interviews",
+        "Job Interviews",
         "Earlier practice sessions",
         "Completed and saved sessions",
         "Candidate live interviews",
@@ -309,7 +309,7 @@ def test_unified_page_renders_all_sections(unified_history_db, monkeypatch, dete
     assert "Microphone audio" in _markdown(app)
     labels = _labels(app)
     for label in (
-        "Open Mock Interview report",
+        "Open Job Interview report",
         "Open Live Webcam report",
         "Open live interview details",
         "Open details",
@@ -320,7 +320,7 @@ def test_unified_page_renders_all_sections(unified_history_db, monkeypatch, dete
 def test_report_buttons_use_distinct_keys_and_stage4a_targets(
     unified_history_db, monkeypatch
 ):
-    from frontend.user.unified_history import LIVE_REPORT_KEY, MOCK_REPORT_KEY
+    from frontend.user.unified_history import JOB_REPORT_KEY, LIVE_REPORT_KEY
 
     avatar_id = _seed_job_row(
         unified_history_db,
@@ -338,9 +338,9 @@ def test_report_buttons_use_distinct_keys_and_stage4a_targets(
     )
 
     app, navigations = _app(unified_history_db, monkeypatch)
-    next(button for button in app.button if button.label == "Open Mock Interview report").click().run()
-    assert app.session_state[MOCK_REPORT_KEY] == avatar_id
-    assert navigations == ["mock_interview"]
+    next(button for button in app.button if button.label == "Open Job Interview report").click().run()
+    assert app.session_state[JOB_REPORT_KEY] == avatar_id
+    assert navigations == ["job_interview"]
 
     app, navigations = _app(unified_history_db, monkeypatch)
     next(button for button in app.button if button.label == "Open Live Webcam report").click().run()
@@ -350,11 +350,11 @@ def test_report_buttons_use_distinct_keys_and_stage4a_targets(
 
 def test_tabs_and_report_keys_are_preserved_in_source() -> None:
     source = UNIFIED_PAGE.read_text(encoding="utf-8")
-    for label in ("Mock Interview", "Live Webcam", "Live Sessions", "Recordings"):
+    for label in ("Job Interview", "Live Webcam", "Live Sessions", "Recordings"):
         assert f'"{label}"' in source
-    assert 'MOCK_REPORT_KEY = "_ai_avatar_report_id"' in source
+    assert 'JOB_REPORT_KEY = "_job_interview_report_id"' in source
     assert 'LIVE_REPORT_KEY = "live_webcam_report_id"' in source
-    assert 'report_target="mock_interview"' in source
+    assert 'report_target="job_interview"' in source
     assert 'report_target="live_webcam_interview"' in source
     assert 'show_live_recording_history(show_header=False)' in source
 
@@ -475,5 +475,5 @@ def test_legacy_routes_and_recording_safeguards_remain_intact() -> None:
     assert "retry_live_media_deletions" in recording_source
     assert '"Interview History"' in app_source
     assert '"Recording History"' in app_source
-    assert '"mock_interview"' in navigation_source
+    assert '"job_interview"' in navigation_source
     assert 'target != PAGES["live_webcam"]' in navigation_source

@@ -80,7 +80,7 @@ def show_coach() -> None:
                     st.write(f"**Improve:** {row['Improvements']}")
                     st.write(f"**Better answer:** {row['Better answer']}")
         else:
-            empty_state("No evaluated answers yet.", "Complete a mock interview to build feedback.")
+            empty_state("No evaluated answers yet.", "Complete a job interview to build feedback.")
 
         section("Practice assessments", ":material/analytics:")
         if assessment_rows:

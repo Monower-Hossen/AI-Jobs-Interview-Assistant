@@ -1,70 +1,62 @@
-from services.answer_evaluator import AnswerEvaluation, AnswerEvaluator, evaluate_answer
-from services.auth_service import (
-    Account,
-    AuthError,
-    authenticate,
-    get_account,
-    register,
-)
-from services.interview_generator import (
-    Difficulty,
-    InterviewGenerator,
-    InterviewQuestion,
-    QuestionCategory,
-    QuestionSet,
-    generate_interview_questions,
-)
-from services.job_analyzer import (
-    JobAnalysisResult,
-    JobAnalyzer,
-    analyze_job_description,
-)
-from services.job_matcher import (
-    ExperienceGap,
-    MissingSkill,
-    ResumeJobMatcher,
-    ResumeJobMatchResult,
-    SkillMatch,
-    match_resume_job,
-)
-from services.llm_service import (
-    GeminiProvider,
-    GroqProvider,
-    LLMProvider,
-    LLMResponse,
-    LLMService,
-    check_provider_health,
-    get_llm_service,
-    get_provider_registry,
-    get_provider_status,
-    reset_llm_service,
-    test_provider_connection,
-)
-from services.profile_service import (
-    get_profile_completion,
-    get_profile_recommendations,
-    get_user_profile,
-    update_user_profile,
-)
-from services.report_generator import (
-    ImprovementPlanItem,
-    InterviewReport,
-    ReportGenerator,
-    generate_interview_report,
-)
-from services.resume_analyzer import (
-    ResumeAnalysisResult,
-    ResumeAnalyzer,
-    ResumeScores,
-    analyze_resume,
-)
-from services.speech_to_text import (
-    SpeechToText,
-    TranscriptionResult,
-    get_speech_to_text,
-    reset_speech_to_text,
-    transcribe_audio,
-)
+from importlib import import_module
+from typing import Any
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "Account": ("services.auth_service", "Account"),
+    "AnswerEvaluation": ("services.answer_evaluator", "AnswerEvaluation"),
+    "AnswerEvaluator": ("services.answer_evaluator", "AnswerEvaluator"),
+    "AuthError": ("services.auth_service", "AuthError"),
+    "Difficulty": ("services.interview_generator", "Difficulty"),
+    "ExperienceGap": ("services.job_matcher", "ExperienceGap"),
+    "GeminiProvider": ("services.llm_service", "GeminiProvider"),
+    "GroqProvider": ("services.llm_service", "GroqProvider"),
+    "ImprovementPlanItem": ("services.report_generator", "ImprovementPlanItem"),
+    "InterviewGenerator": ("services.interview_generator", "InterviewGenerator"),
+    "InterviewQuestion": ("services.interview_generator", "InterviewQuestion"),
+    "InterviewReport": ("services.report_generator", "InterviewReport"),
+    "JobAnalysisResult": ("services.job_analyzer", "JobAnalysisResult"),
+    "JobAnalyzer": ("services.job_analyzer", "JobAnalyzer"),
+    "LLMProvider": ("services.llm_service", "LLMProvider"),
+    "LLMResponse": ("services.llm_service", "LLMResponse"),
+    "LLMService": ("services.llm_service", "LLMService"),
+    "MissingSkill": ("services.job_matcher", "MissingSkill"),
+    "QuestionCategory": ("services.interview_generator", "QuestionCategory"),
+    "QuestionSet": ("services.interview_generator", "QuestionSet"),
+    "ReportGenerator": ("services.report_generator", "ReportGenerator"),
+    "ResumeAnalysisResult": ("services.resume_analyzer", "ResumeAnalysisResult"),
+    "ResumeAnalyzer": ("services.resume_analyzer", "ResumeAnalyzer"),
+    "ResumeJobMatchResult": ("services.job_matcher", "ResumeJobMatchResult"),
+    "ResumeJobMatcher": ("services.job_matcher", "ResumeJobMatcher"),
+    "ResumeScores": ("services.resume_analyzer", "ResumeScores"),
+    "SkillMatch": ("services.job_matcher", "SkillMatch"),
+    "SpeechToText": ("services.speech_to_text", "SpeechToText"),
+    "TranscriptionResult": ("services.speech_to_text", "TranscriptionResult"),
+    "analyze_job_description": ("services.job_analyzer", "analyze_job_description"),
+    "analyze_resume": ("services.resume_analyzer", "analyze_resume"),
+    "authenticate": ("services.auth_service", "authenticate"),
+    "check_provider_health": ("services.llm_service", "check_provider_health"),
+    "evaluate_answer": ("services.answer_evaluator", "evaluate_answer"),
+    "generate_interview_questions": (
+        "services.interview_generator",
+        "generate_interview_questions",
+    ),
+    "generate_interview_report": ("services.report_generator", "generate_interview_report"),
+    "get_account": ("services.auth_service", "get_account"),
+    "get_llm_service": ("services.llm_service", "get_llm_service"),
+    "get_profile_completion": ("services.profile_service", "get_profile_completion"),
+    "get_profile_recommendations": ("services.profile_service", "get_profile_recommendations"),
+    "get_provider_registry": ("services.llm_service", "get_provider_registry"),
+    "get_provider_status": ("services.llm_service", "get_provider_status"),
+    "get_speech_to_text": ("services.speech_to_text", "get_speech_to_text"),
+    "get_user_profile": ("services.profile_service", "get_user_profile"),
+    "match_resume_job": ("services.job_matcher", "match_resume_job"),
+    "register": ("services.auth_service", "register"),
+    "reset_llm_service": ("services.llm_service", "reset_llm_service"),
+    "reset_speech_to_text": ("services.speech_to_text", "reset_speech_to_text"),
+    "test_provider_connection": ("services.llm_service", "test_provider_connection"),
+    "transcribe_audio": ("services.speech_to_text", "transcribe_audio"),
+    "update_user_profile": ("services.profile_service", "update_user_profile"),
+}
 
 __all__ = [
     "Account",
@@ -119,3 +111,17 @@ __all__ = [
     "transcribe_audio",
     "update_user_profile",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = target
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

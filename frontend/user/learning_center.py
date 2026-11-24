@@ -75,23 +75,32 @@ def show_learning_center() -> None:
             "Exercises",
             "Study notes",
             "Progress",
-        ]
+        ],
+        on_change="rerun",
+        key="learning_center_tabs",
     )
 
-    with overview_tab:
-        _render_overview(session_id, actor_user_id, snapshot)
-    with roadmap_tab:
-        show_roadmap_page(embedded=True)
-    with resources_tab:
-        _render_resources(session_id, actor_user_id)
-    with library_tab:
-        show_knowledge_page(embedded=True)
-    with exercises_tab:
-        show_technical_page(embedded=True)
-    with notes_tab:
-        _render_notes(session_id)
-    with progress_tab:
-        render_learning_progress(session_id, snapshot)
+    if overview_tab.open:
+        with overview_tab:
+            _render_overview(session_id, actor_user_id, snapshot)
+    if roadmap_tab.open:
+        with roadmap_tab:
+            show_roadmap_page(embedded=True)
+    if resources_tab.open:
+        with resources_tab:
+            _render_resources(session_id, actor_user_id)
+    if library_tab.open:
+        with library_tab:
+            show_knowledge_page(embedded=True)
+    if exercises_tab.open:
+        with exercises_tab:
+            show_technical_page(embedded=True)
+    if notes_tab.open:
+        with notes_tab:
+            _render_notes(session_id)
+    if progress_tab.open:
+        with progress_tab:
+            render_learning_progress(session_id, snapshot)
 
 
 def _render_overview(session_id: int, actor_user_id, snapshot: dict) -> None:

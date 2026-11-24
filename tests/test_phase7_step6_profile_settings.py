@@ -182,7 +182,9 @@ def test_preference_partial_update_preserves_existing_values(settings_db):
     assert preferences["learning_preferences"]["weekly_goal"] == 8
     assert preferences["notification_preferences"]["achievements"] is False
     with pytest.raises(AuthError):
-        update_user_preferences(user_id, default_role="Intruder", actor_user_id=settings_db["user2"])
+        update_user_preferences(
+            user_id, default_role="Intruder", actor_user_id=settings_db["user2"]
+        )
 
 
 def test_notification_preferences_are_enforced(settings_db):
@@ -237,9 +239,7 @@ def test_account_activity_is_owner_scoped_and_credential_safe(settings_db):
     with pytest.raises(AuthError):
         get_account_activity(user_id, settings_db["user2"])
     with pytest.raises(AuthError):
-        change_password(
-            user_id, "Changed123", "Another123", actor_user_id=settings_db["user2"]
-        )
+        change_password(user_id, "Changed123", "Another123", actor_user_id=settings_db["user2"])
 
 
 def test_interview_defaults_use_preferred_categories():
@@ -306,13 +306,20 @@ def test_account_pages_render_and_are_registered(settings_db, monkeypatch):
     settings_app.run()
     assert settings_app.exception == []
     assert any("Account settings" in title.value for title in settings_app.title)
+    assert [tab.label for tab in settings_app.tabs] == [
+        "Interview preferences",
+        "Notifications and privacy",
+        "Security",
+    ]
+    settings_text = " ".join(str(getattr(node, "value", "")) for node in settings_app.main)
+    assert "workspace" not in settings_text.lower()
+    assert settings_app.get_by_key("account_current_password") is not None
 
 
 def test_credential_cleanup_includes_account_password_widgets():
     from streamlit.testing.v1 import AppTest
 
-    app = AppTest.from_string(
-        """
+    app = AppTest.from_string("""
 import streamlit as st
 from frontend.shared.auth_ui import clear_credential_state
 
@@ -324,8 +331,7 @@ if "guard" not in st.session_state:
     st.session_state.profile_current_password = "secret"
     clear_credential_state()
 st.write("done")
-"""
-    )
+""")
     app.run()
     assert app.exception == []
     for key in (

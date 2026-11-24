@@ -31,19 +31,6 @@ EXPECTED_NON_LEARNING_PAGES = {
             "url_path": "job-interview",
         },
         {
-            "path": "frontend/user/ai_avatar_interview.py",
-            "title": "Mock Interview",
-            "icon": ":material/smart_toy:",
-            "url_path": "mock_interview",
-        },
-        {
-            "path": "frontend/user/ai_avatar_interview.py",
-            "title": "AI Avatar Interview",
-            "icon": ":material/smart_toy:",
-            "url_path": "ai-avatar-interview",
-            "visibility": "hidden",
-        },
-        {
             "path": "frontend/user/live_webcam_interview.py",
             "title": "Live Interview",
             "icon": ":material/videocam:",
@@ -54,13 +41,6 @@ EXPECTED_NON_LEARNING_PAGES = {
             "title": "Invitations",
             "icon": ":material/event_available:",
             "url_path": "live-interview-invitations",
-        },
-        {
-            "path": "frontend/user/mock_interview.py",
-            "title": "Legacy Mock Interview",
-            "icon": ":material/forum:",
-            "url_path": "legacy-mock-interview",
-            "visibility": "hidden",
         },
     ],
     "Career Preparation": [
@@ -101,12 +81,6 @@ EXPECTED_NON_LEARNING_PAGES = {
             "title": "Recording History",
             "icon": ":material/video_file:",
             "url_path": "live-recording-history",
-        },
-        {
-            "path": "frontend/user/learning_progress.py",
-            "title": "Learning Progress",
-            "icon": ":material/trending_up:",
-            "url_path": "learning-progress",
         },
     ],
     "AI Career Coach": [
@@ -194,6 +168,9 @@ def _navigation_pages() -> dict[str, str]:
 
 def test_learning_center_is_the_only_visible_learning_entry() -> None:
     preparation = _user_page_groups()["Career Preparation"]
+    assert "frontend/user/learning_progress.py" not in [
+        str(entry.get("path")) for entry in preparation
+    ]
     visible_learning_entries = [
         entry
         for entry in preparation
@@ -290,3 +267,44 @@ def test_no_unrelated_user_page_declarations_changed() -> None:
         for group, entries in groups.items()
     }
     assert unrelated == EXPECTED_NON_LEARNING_PAGES
+
+
+def test_learning_center_tabs_only_render_selected_tab() -> None:
+    source = (PROJECT_ROOT / LEARNING_CENTER_PAGE).read_text(encoding="utf-8")
+    assert 'on_change="rerun"' in source
+    assert 'key="learning_center_tabs"' in source
+    for tab in (
+        "overview_tab",
+        "roadmap_tab",
+        "resources_tab",
+        "library_tab",
+        "exercises_tab",
+        "notes_tab",
+        "progress_tab",
+    ):
+        assert f"if {tab}.open:" in source
+        assert f"with {tab}:" in source
+
+
+def test_knowledge_page_handles_low_memory_guard(monkeypatch) -> None:
+    from services.resource_monitor import ResourceBusyError
+    from streamlit.testing.v1 import AppTest
+
+    def _denied(*args, **kwargs):
+        raise ResourceBusyError("Available system memory is critically low.")
+
+    monkeypatch.syspath_prepend(str(PROJECT_ROOT))
+    monkeypatch.syspath_prepend(str(PROJECT_ROOT / "backend"))
+    monkeypatch.setattr("frontend.user.knowledge_page.get_knowledge_base", _denied)
+    app = AppTest.from_string(
+        "from frontend.user.knowledge_page import show_knowledge_page\n"
+        "show_knowledge_page()",
+        default_timeout=30,
+    )
+    app.session_state["user_session_id"] = "resource-token"
+    app.session_state["user_id"] = 7
+    app.run()
+
+    assert not app.exception, [str(error.value) for error in app.exception]
+    warnings = "\n".join(str(item.value) for item in app.warning)
+    assert "knowledge library is temporarily unavailable" in warnings.lower()

@@ -39,14 +39,8 @@ if str(backend_root) not in sys.path:
 
 from database.db import init_database
 from services.auth_service import get_account, is_admin_role
-from services.llm_service import (
-    check_provider_health,
-    get_provider_registry,
-    get_provider_status,
-)
 
 from frontend.shared.auth_ui import show_auth_page, sign_out
-from frontend.shared.components import render_resource_status_sidebar
 
 
 def _teardown_live_capture(reason: str) -> None:
@@ -126,12 +120,14 @@ def main() -> None:
         ).run()
         return
 
+    st.logo(str(project_root / "frontend" / "assets" / "sidebar_brand.svg"), size="large")
+
     if is_admin_role(account):
-        _render_sidebar(account)
         st.navigation(_admin_pages(), position="sidebar", expanded=True).run()
+        _render_sidebar_footer("sidebar_sign_out")
     else:
-        _render_user_sidebar(account)
         st.navigation(_user_pages(account), position="sidebar", expanded=True).run()
+        _render_sidebar_footer("user_sidebar_sign_out")
 
 
 def _current_account():
@@ -160,87 +156,15 @@ def _current_account():
     return account
 
 
-def _render_provider_sidebar(button_key: str) -> None:
-    registry = get_provider_registry()
-    try:
-        status = get_provider_status()
-        active_provider = str(status.get("active") or "none").upper()
-        providers = status.get("providers", {})
-        ready = [name for name in registry if providers.get(name, {}).get("configured")]
-    except Exception:
-        active_provider = "UNAVAILABLE"
-        ready = []
-
-    st.sidebar.caption(
-        f"Provider: {active_provider} · Ready: {', '.join(ready) if ready else 'none'}"
-    )
-    if not ready:
-        st.sidebar.warning(
-            "No provider configured. Ask an administrator to add a key.",
-            icon=":material/key:",
-        )
-
+def _render_sidebar_footer(button_key: str) -> None:
+    st.sidebar.divider()
     if st.sidebar.button(
-        "Check provider health",
-        icon=":material/cloud:",
+        "Sign out",
+        icon=":material/logout:",
         width="stretch",
         key=button_key,
     ):
-        try:
-            with st.spinner("Checking providers…"):
-                health = check_provider_health()
-        except Exception:
-            st.sidebar.warning("Provider check unavailable.", icon=":material/warning:")
-            return
-        for name, info in health.items():
-            message = f"{name}: {info.get('status', 'Unavailable')}"
-            if info.get("error"):
-                message += f" · {str(info['error'])[:80]}"
-            if info.get("healthy"):
-                st.sidebar.success(message, icon=":material/check_circle:")
-            else:
-                st.sidebar.warning(message, icon=":material/warning:")
-
-
-def _render_sidebar(account) -> None:
-    st.sidebar.markdown("### AI Interview Intelligence")
-    st.sidebar.caption(f"Workspace • {str(st.session_state.user_session_id)[:8]}")
-    st.sidebar.divider()
-
-    with st.sidebar.container(border=True):
-        st.markdown(f"**{account.full_name}**")
-        st.caption(f"{account.email} • {account.role.title()} account")
-        if st.button(
-            "Sign out",
-            icon=":material/logout:",
-            width="stretch",
-            key="sidebar_sign_out",
-        ):
-            sign_out()
-
-    _render_provider_sidebar("sidebar_provider_health")
-    render_resource_status_sidebar("sidebar_resource_status")
-
-
-def _render_user_sidebar(account) -> None:
-    st.sidebar.markdown("### AI Interview Assistant")
-    st.sidebar.caption(f"Private workspace · {str(st.session_state.user_session_id)[:8]}")
-
-    with st.sidebar.container(border=True):
-        st.markdown(f"**{account.full_name}**")
-        st.caption(account.email)
-        st.caption("User account")
-        if st.button(
-            "Sign out",
-            icon=":material/logout:",
-            width="stretch",
-            key="user_sidebar_sign_out",
-        ):
-            sign_out()
-
-    st.sidebar.caption("Workspace navigation")
-    _render_provider_sidebar("user_sidebar_provider_health")
-    render_resource_status_sidebar("user_sidebar_resource_status")
+        sign_out()
 
 
 def _admin_pages() -> dict:
@@ -331,19 +255,6 @@ def _user_pages(account) -> dict:
                 url_path="job-interview",
             ),
             st.Page(
-                "frontend/user/ai_avatar_interview.py",
-                title="Mock Interview",
-                icon=":material/smart_toy:",
-                url_path="mock_interview",
-            ),
-            st.Page(
-                "frontend/user/ai_avatar_interview.py",
-                title="AI Avatar Interview",
-                icon=":material/smart_toy:",
-                url_path="ai-avatar-interview",
-                visibility="hidden",
-            ),
-            st.Page(
                 "frontend/user/live_webcam_interview.py",
                 title="Live Interview",
                 icon=":material/videocam:",
@@ -354,13 +265,6 @@ def _user_pages(account) -> dict:
                 title="Invitations",
                 icon=":material/event_available:",
                 url_path="live-interview-invitations",
-            ),
-            st.Page(
-                "frontend/user/mock_interview.py",
-                title="Legacy Mock Interview",
-                icon=":material/forum:",
-                url_path="legacy-mock-interview",
-                visibility="hidden",
             ),
         ],
         "Career Preparation": [
@@ -409,12 +313,6 @@ def _user_pages(account) -> dict:
                 title="Recording History",
                 icon=":material/video_file:",
                 url_path="live-recording-history",
-            ),
-            st.Page(
-                "frontend/user/learning_progress.py",
-                title="Learning Progress",
-                icon=":material/trending_up:",
-                url_path="learning-progress",
             ),
         ],
         "AI Career Coach": [

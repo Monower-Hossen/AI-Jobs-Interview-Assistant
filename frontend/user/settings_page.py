@@ -368,7 +368,7 @@ def _about() -> None:
 
         - Resume analysis and job-description matching
         - Persistent RAG over uploaded documents
-        - Adaptive mock interviews with STAR and technical modes
+        - Adaptive job interviews with STAR and technical modes
         - Seven-dimension answer evaluation and readiness analytics
         - Personalized learning roadmaps and PDF-ready reports
         - Isolated accounts with role-based administration

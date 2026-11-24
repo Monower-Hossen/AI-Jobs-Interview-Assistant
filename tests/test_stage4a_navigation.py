@@ -2,8 +2,7 @@ import ast
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-AI_AVATAR_PAGE = "frontend/user/ai_avatar_interview.py"
-LEGACY_PAGE = "frontend/user/mock_interview.py"
+JOB_INTERVIEW_PAGE = "frontend/user/job_interview.py"
 
 
 def _user_page_groups() -> dict[str, list[dict[str, object]]]:
@@ -53,6 +52,11 @@ def _navigation_pages() -> dict[str, str]:
     raise AssertionError("PAGES mapping was not found")
 
 
+def test_mock_interview_page_files_are_removed() -> None:
+    assert not (PROJECT_ROOT / "frontend/user/mock_interview.py").exists()
+    assert not (PROJECT_ROOT / "frontend/user/ai_avatar_interview.py").exists()
+
+
 def test_user_sidebar_groups_are_consolidated_groups() -> None:
     groups = _user_page_groups()
     assert list(groups) == [
@@ -67,27 +71,18 @@ def test_user_sidebar_groups_are_consolidated_groups() -> None:
     assert all(groups.values())
 
 
-def test_mock_interview_alias_and_legacy_routes_are_registered() -> None:
+def test_job_interview_route_is_registered_without_mock_routes() -> None:
     groups = _user_page_groups()
     practice = groups["Interview Studio"]
 
-    canonical = [entry for entry in practice if entry.get("title") == "Mock Interview"]
-    assert len(canonical) == 1
-    assert canonical[0]["path"] == AI_AVATAR_PAGE
-    assert canonical[0]["url_path"] == "mock_interview"
-    assert "visibility" not in canonical[0]
+    job = [entry for entry in practice if entry.get("title") == "Job Interview"]
+    assert len(job) == 1
+    assert job[0]["path"] == JOB_INTERVIEW_PAGE
+    assert job[0]["url_path"] == "job-interview"
+    assert "visibility" not in job[0]
 
-    alias = [entry for entry in practice if entry.get("title") == "AI Avatar Interview"]
-    assert len(alias) == 1
-    assert alias[0]["path"] == AI_AVATAR_PAGE
-    assert alias[0]["url_path"] == "ai-avatar-interview"
-    assert alias[0]["visibility"] == "hidden"
-
-    legacy = [entry for entry in practice if entry.get("title") == "Legacy Mock Interview"]
-    assert len(legacy) == 1
-    assert legacy[0]["path"] == LEGACY_PAGE
-    assert legacy[0]["url_path"] == "legacy-mock-interview"
-    assert legacy[0]["visibility"] == "hidden"
+    titles = {str(entry.get("title")) for entry in practice}
+    assert not [title for title in titles if "mock" in title.lower()]
 
     live_webcam = [entry for entry in practice if entry.get("title") == "Live Interview"]
     assert len(live_webcam) == 1
@@ -100,9 +95,10 @@ def test_mock_interview_alias_and_legacy_routes_are_registered() -> None:
 
 def test_navigation_aliases_resolve_to_registered_pages() -> None:
     pages = _navigation_pages()
-    for alias in ("mock_interview", "interview_setup", "interview", "ai_avatar", "ai_avatar_interview"):
-        assert pages[alias] == AI_AVATAR_PAGE
-    assert pages["legacy_mock_interview"] == LEGACY_PAGE
+    for alias in ("interview_setup", "interview", "job_interview"):
+        assert pages[alias] == JOB_INTERVIEW_PAGE
+    for alias in ("mock_interview", "ai_avatar", "ai_avatar_interview", "legacy_mock_interview"):
+        assert alias not in pages
     for target in pages.values():
         assert (PROJECT_ROOT / str(target)).exists(), target
 

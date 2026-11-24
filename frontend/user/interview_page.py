@@ -1,4 +1,4 @@
-"""AI mock interview: adaptive questions, text/voice answers, evaluation and reports."""
+"""Adaptive practice interview: questions, text/voice answers, evaluation and reports."""
 
 import hashlib
 import json
@@ -259,7 +259,7 @@ def _interview_defaults() -> dict:
 
 def show_interview_setup_page() -> None:
     page_header(
-        "AI mock interview",
+        "Adaptive practice interview",
         "Configure a personalized, adaptive practice session",
         ":material/forum:",
     )
@@ -416,7 +416,7 @@ def _kb_chunk_count() -> int:
 
 def show_interview_page() -> None:
     page_header(
-        "Mock interview", "Answer questions and receive structured AI feedback", ":material/mic:"
+        "Practice interview", "Answer questions and receive structured AI feedback", ":material/mic:"
     )
     if not st.session_state.get("interview_questions"):
         empty_state(

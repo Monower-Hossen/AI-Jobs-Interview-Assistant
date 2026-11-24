@@ -1,6 +1,7 @@
 """Account management workflows: admin creation, login, status, and access control."""
 
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -732,3 +733,102 @@ class TestAdminPlatformReports:
             get_platform_report(member.id)
         with pytest.raises(AuthError, match="Administrator access"):
             get_platform_report_date_range(member.id)
+
+
+class TestSidebarCleanup:
+    def test_brand_logo_is_loaded_once_for_both_roles(self):
+        source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        asset = PROJECT_ROOT / "frontend" / "assets" / "sidebar_brand.svg"
+
+        assert source.count("st.logo(") == 1
+        assert 'st.logo(str(project_root / "frontend" / "assets" / "sidebar_brand.svg"), size="large")' in source
+        assert source.index("st.logo(") < source.index("if is_admin_role(account):")
+        assert asset.exists()
+        svg = asset.read_text(encoding="utf-8")
+        root = ET.fromstring(svg)
+        text_nodes = [node for node in root.iter() if node.tag.endswith("text")]
+        assert len(text_nodes) == 1
+        text_node = text_nodes[0]
+        tspans = [node for node in text_node if node.tag.endswith("tspan")]
+        assert "".join(node.text or "" for node in tspans) == "AI Jobs Interview Assistant"
+        assert "<title>AI Jobs Interview Assistant</title>" in svg
+        assert "#93C5FD" in svg
+        assert 'stroke="#60A5FA"' in svg
+        assert "linearGradient" not in svg
+        assert "filter" not in svg
+        assert "url(#" not in svg
+
+        logo_height = float(root.attrib["height"])
+        logo_width = float(root.attrib["width"])
+        rendered_font_size = float(text_node.attrib["font-size"]) * (32 / logo_height)
+        assert 23 <= rendered_font_size <= 24
+        assert int(text_node.attrib["font-weight"]) >= 800
+        assert float(text_node.attrib["x"]) + float(text_node.attrib["textLength"]) <= logo_width
+
+    def test_obsolete_sidebar_sections_are_removed(self):
+        source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        for removed in (
+            "AI Interview Assistant",
+            "Private workspace",
+            "Workspace navigation",
+            "Check provider health",
+            "Provider:",
+            "render_resource_status_sidebar",
+            "User account",
+            "_render_provider_sidebar",
+            "_render_sidebar(account)",
+            "_render_user_sidebar(account)",
+        ):
+            assert removed not in source
+
+    @pytest.mark.parametrize("role", ["admin", "user"])
+    def test_sidebar_footer_has_only_sign_out(self, auth_db, monkeypatch, role):
+        from database import User, UserSession, get_db_context
+        from services.auth_service import get_account
+        from streamlit.testing.v1 import AppTest
+
+        from frontend.shared import auth_ui
+
+        if role == "admin":
+            user_id = auth_db["admin_id"]
+            token = "sidebar-admin-token"
+        else:
+            member = _create_user(auth_db["admin_id"])
+            user_id = member.id
+            token = "sidebar-user-token"
+            with get_db_context() as db:
+                db.query(User).filter(User.id == user_id).one().must_change_password = False
+        with get_db_context() as db:
+            db.add(UserSession(session_id=token, user_id=user_id))
+
+        account = get_account(user_id)
+        assert account is not None
+        sign_out_calls: list[bool] = []
+        monkeypatch.setattr(auth_ui, "sign_out", lambda: sign_out_calls.append(True))
+
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=30)
+        app.session_state["db_initialized"] = True
+        app.session_state["user_id"] = user_id
+        app.session_state["account"] = account
+        app.session_state["must_change_password"] = False
+        app.session_state["user_session_id"] = token
+        app.run()
+
+        assert not app.exception, [str(error.value) for error in app.exception]
+        sidebar_text = "\n".join(
+            f"{getattr(element, 'value', '')} {getattr(element, 'label', '')}"
+            for element in app.sidebar
+        )
+        assert account.full_name not in sidebar_text
+        assert account.email not in sidebar_text
+        assert "Provider:" not in sidebar_text
+        assert "Check provider health" not in sidebar_text
+        assert "User account" not in sidebar_text
+
+        buttons = [button for button in app.button if button.label == "Sign out"]
+        assert len(buttons) == 1
+        sidebar_types = [type(element).__name__ for element in app.sidebar]
+        assert sidebar_types[-2:] == ["Divider", "Button"]
+
+        buttons[0].click().run()
+        assert sign_out_calls == [True]

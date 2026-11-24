@@ -4,23 +4,50 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import MutableMapping
 from datetime import UTC, datetime
 from typing import Any
 
 import streamlit as st
+from services.ai_avatar_interview_service import clear_avatar_session
+from services.ai_avatar_session import (
+    CANCELLED,
+    COMPLETED,
+    ERROR,
+    IDLE,
+    LISTENING,
+    PROCESSING,
+    SPEAKING,
+    WAITING,
+    AvatarSessionError,
+    begin_listening,
+    begin_processing,
+    current_ai_avatar_state,
+    initialize_ai_avatar_state,
+    mark_question_spoken,
+    mark_ready_to_complete,
+    mark_resumed,
+    mark_submitted,
+    repeat_question,
+    reset_ai_avatar_state,
+    set_error,
+    set_transcript,
+)
 from services.interview_media import MediaError, save_interview_media, transcribe_media
 from services.job_interview_constants import MAX_ANSWER_SECONDS
 
+from frontend.shared.avatar import avatar_status_label, render_ai_avatar
 from frontend.shared.components import (
     empty_state,
     error_state,
     page_header,
     render_score_chart,
     speak_text,
+    stop_speech,
     success_toast,
 )
 from frontend.shared.navigation import go_to
+
+_AVATAR_SPEECH_KEY = "ai_avatar"
 
 
 def _identity() -> tuple[int, str] | None:
@@ -43,7 +70,7 @@ def _upload_fingerprint(upload: Any) -> str | None:
 
 
 def _sync_upload_state(
-    state: MutableMapping[str, Any],
+    state: Any,
     *,
     media_key: str,
     answer_key: str,
@@ -88,11 +115,85 @@ def _answer_time_remaining(started_at: datetime) -> int:
     return max(0, MAX_ANSWER_SECONDS - int(elapsed))
 
 
-def _clear_answer_timers(state: MutableMapping[str, Any], interview_id: int) -> None:
+def _clear_answer_timers(state: Any, interview_id: int) -> None:
     prefix = f"_job_answer_start_{interview_id}_"
     for key in list(state):
         if isinstance(key, str) and key.startswith(prefix):
             state.pop(key, None)
+
+
+def _sync_voice_avatar_state(
+    state: Any,
+    *,
+    user_id: int,
+    session_token: str,
+    interview_id: int,
+    question: Any | None,
+    job_title: str,
+    company: str,
+    consent_given: bool,
+) -> dict[str, Any]:
+    record = initialize_ai_avatar_state(state, user_id, session_token)
+    question_number = int(question.question_number) if question is not None else 0
+    status = str(record.get("status") or IDLE)
+    stale = (
+        int(record.get("interview_id") or 0) != int(interview_id)
+        or status in {COMPLETED, CANCELLED}
+        or (question is not None and int(record.get("question_id") or 0) != question_number)
+        or (question is None and not record.get("can_complete"))
+    )
+    if stale:
+        reset_ai_avatar_state(state, user_id, session_token)
+        record = current_ai_avatar_state(state)
+        if question is None:
+            mark_ready_to_complete(
+                record,
+                interview_id=interview_id,
+                job_title=job_title,
+                company=company,
+                consent_given=consent_given,
+            )
+        else:
+            mark_resumed(
+                record,
+                interview_id=interview_id,
+                job_title=job_title,
+                company=company,
+                question_id=question_number,
+                question_number=question_number,
+                question_text=str(question.question_text),
+                question_category=str(getattr(question, "category", "") or ""),
+                question_difficulty=str(getattr(question, "difficulty", "") or ""),
+                consent_given=consent_given,
+            )
+    return record
+
+
+def _voice_avatar_speech_key(record: dict[str, Any]) -> str:
+    return (
+        f"job_avatar_{int(record.get('interview_id') or 0)}_"
+        f"{int(record.get('question_number') or 0)}_"
+        f"{int(record.get('tts_key') or 0)}"
+    )
+
+
+def _render_voice_avatar(record: dict[str, Any], question_text: str) -> None:
+    status = str(record.get("status") or IDLE)
+    render_ai_avatar(
+        status,
+        question_text,
+        f"job_{int(record.get('interview_id') or 0)}_{_voice_avatar_speech_key(record)}",
+    )
+    st.caption(f"AI avatar: {avatar_status_label(status)}")
+
+
+def _ensure_voice_avatar_listening(record: dict[str, Any]) -> None:
+    status = str(record.get("status") or IDLE)
+    if status == SPEAKING:
+        stop_speech(_AVATAR_SPEECH_KEY)
+        mark_question_spoken(record)
+    if str(record.get("status") or IDLE) in {WAITING, ERROR}:
+        begin_listening(record)
 
 
 def show_job_interview_page() -> None:
@@ -222,8 +323,10 @@ def _render_setup(user_id: int, session_token: str) -> None:
     )
     mode = str(mode_label or "Text").lower()
     if mode == "voice":
+        render_ai_avatar(IDLE, "Your AI interviewer is ready to begin.", "job_voice_setup")
         st.caption(
-            "Voice mode records your answer with your microphone and transcribes it for evaluation."
+            "Voice mode pairs you with an AI avatar, reads each question aloud, and transcribes "
+            "your microphone answer for evaluation."
         )
     elif mode == "video":
         st.caption(
@@ -284,12 +387,26 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         return
 
     question = state.current_question
+    voice_record: dict[str, Any] | None = None
+    if state.config.mode == "voice":
+        voice_record = _sync_voice_avatar_state(
+            st.session_state,
+            user_id=user_id,
+            session_token=session_token,
+            interview_id=interview_id,
+            question=question,
+            job_title=state.job_title,
+            company=state.company,
+            consent_given=state.consent_given,
+        )
     st.caption(f"{state.job_title} • {state.company} • {state.config.mode.title()} mode")
     st.progress(
         state.answered_count / max(1, state.config.target_questions),
         text=f"Answer {state.answered_count} of {state.config.target_questions} planned questions",
     )
     if question is None:
+        if voice_record is not None:
+            render_ai_avatar(COMPLETED, "All planned questions are answered.", "job_voice_complete")
         st.success("All planned questions are answered.")
         if st.button(
             "Generate final report",
@@ -298,11 +415,17 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
             width="stretch",
             key="_job_interview_finish",
         ):
+            if voice_record is not None:
+                stop_speech(_AVATAR_SPEECH_KEY)
             with st.spinner("Analysing your answers…"):
                 complete_job_interview(
                     interview_id=interview_id,
                     actor_user_id=user_id,
                     session_token=session_token,
+                )
+            if voice_record is not None:
+                clear_avatar_session(
+                    st.session_state, user_id=user_id, session_token=session_token
                 )
             st.session_state.pop("_job_interview_active_id", None)
             st.session_state["_job_interview_report_id"] = interview_id
@@ -313,7 +436,35 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         st.markdown(f"### Question {question.question_number}")
         st.caption(f"{question.category} • {question.difficulty.title()}")
         st.markdown(f"**{question.question_text}**")
-        if state.config.mode in {"voice", "video"}:
+        if state.config.mode == "voice" and voice_record is not None:
+            question_text = str(voice_record.get("question_text") or question.question_text)
+            _render_voice_avatar(voice_record, question_text)
+            status = str(voice_record.get("status") or IDLE)
+            if status == SPEAKING:
+                speak_text(question_text, key=_voice_avatar_speech_key(voice_record))
+                if st.button(
+                    "I heard the question",
+                    type="primary",
+                    icon=":material/check:",
+                    width="stretch",
+                    key=f"_job_avatar_heard_{interview_id}_{question.question_number}",
+                ):
+                    stop_speech(_AVATAR_SPEECH_KEY)
+                    mark_question_spoken(voice_record)
+                    st.rerun()
+            elif status == WAITING:
+                st.info("The AI avatar is waiting for your answer.")
+                if st.button(
+                    "Repeat question",
+                    icon=":material/volume_up:",
+                    key=f"_job_avatar_repeat_{interview_id}_{question.question_number}",
+                ):
+                    stop_speech(_AVATAR_SPEECH_KEY)
+                    repeat_question(voice_record)
+                    st.rerun()
+            elif status == PROCESSING:
+                st.caption("The AI avatar is transcribing your answer.")
+        elif state.config.mode == "video":
             replay_key = f"_job_replay_{interview_id}_{question.question_number}"
             count = int(st.session_state.get(replay_key, 0))
             speak_text(
@@ -352,9 +503,29 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
     source_caption = "Type your answer."
 
     if state.config.mode == "voice":
+        if voice_record is not None and str(voice_record.get("status") or IDLE) == WAITING:
+            if st.button(
+                "Answer with microphone",
+                type="primary",
+                icon=":material/mic:",
+                width="stretch",
+                key=f"_job_avatar_listen_{interview_id}_{question.question_number}",
+            ):
+                begin_listening(voice_record)
+                st.rerun()
         recording = st.audio_input(
             "Record your answer", key=f"_job_audio_input_{interview_id}_{question.question_number}"
         )
+        if voice_record is not None:
+            avatar_status = str(voice_record.get("status") or IDLE)
+            if avatar_status == LISTENING:
+                st.caption(
+                    "Microphone is ready. Allow browser access if prompted."
+                    if recording is None
+                    else "Recording captured. Review the transcript before submitting."
+                )
+            elif avatar_status == SPEAKING:
+                st.caption("Listen to the avatar's question, then start your answer.")
         fingerprint = _upload_fingerprint(recording)
         if _sync_upload_state(
             st.session_state,
@@ -369,9 +540,14 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         if recording is not None and media_id is None:
             source_caption = "Transcribed from your voice recording. Review before submitting."
             if not state.consent_given:
+                if voice_record is not None:
+                    set_error(voice_record, "Give recording consent before transcribing audio.")
                 error_state("Give recording consent before saving an answer recording.")
             else:
                 try:
+                    if voice_record is not None:
+                        _ensure_voice_avatar_listening(voice_record)
+                        begin_processing(voice_record)
                     with st.spinner("Transcribing your recording…"):
                         saved_media_id, text = _process_media_upload(
                             data=recording.getvalue(),
@@ -382,12 +558,17 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
                             session_token=session_token,
                             consent_given=state.consent_given,
                         )
+                except (MediaError, AvatarSessionError) as exc:
+                    if voice_record is not None:
+                        set_error(voice_record, str(exc))
+                    error_state(str(exc))
+                else:
+                    if voice_record is not None:
+                        set_transcript(voice_record, text)
                     st.session_state[media_key] = saved_media_id
                     st.session_state[fingerprint_key] = fingerprint
                     st.session_state[answer_key] = text
                     st.rerun()
-                except MediaError as exc:
-                    error_state(str(exc))
     elif state.config.mode == "video":
         st.info(
             "Record a short video answer with your device, then upload it here. "
@@ -439,6 +620,8 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         help=source_caption,
         key=f"{answer_key}_input",
     )
+    if voice_record is not None and str(voice_record.get("status") or IDLE) == ERROR:
+        error_state(str(voice_record.get("last_error") or "The AI avatar could not continue."))
     submit_col, abandon_col = st.columns([4, 1])
     if submit_col.button(
         "Submit answer",
@@ -449,7 +632,7 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         key=f"_job_submit_{interview_id}_{question.question_number}",
     ):
         try:
-            submit_job_answer(
+            submitted = submit_job_answer(
                 interview_id=interview_id,
                 question_id=int(question.question_number),
                 answer=answer,
@@ -458,7 +641,12 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
                 session_token=session_token,
                 answer_started_at=st.session_state[answer_start_key],
             )
-        except JobInterviewError as exc:
+            if voice_record is not None:
+                stop_speech(_AVATAR_SPEECH_KEY)
+                mark_submitted(voice_record, submitted.current_question)
+        except (JobInterviewError, AvatarSessionError) as exc:
+            if voice_record is not None:
+                set_error(voice_record, str(exc))
             error_state(str(exc))
         else:
             st.session_state.pop(answer_key, None)
@@ -473,6 +661,9 @@ def _render_active(interview_id: int, user_id: int, session_token: str) -> None:
         abandon_job_interview(
             interview_id=interview_id, actor_user_id=user_id, session_token=session_token
         )
+        if voice_record is not None:
+            stop_speech(_AVATAR_SPEECH_KEY)
+            clear_avatar_session(st.session_state, user_id=user_id, session_token=session_token)
         st.session_state.pop("_job_interview_active_id", None)
         _clear_answer_timers(st.session_state, interview_id)
         success_toast("Interview saved as unfinished. You can resume it later.")

@@ -41,7 +41,6 @@ class DashboardSnapshot:
     recommended_actions: list[str] = field(default_factory=list)
     interview_history_summary: dict[str, Any] = field(default_factory=dict)
     performance_comparison: dict[str, Any] = field(default_factory=dict)
-    learning_progress: dict[str, Any] = field(default_factory=dict)
     skill_gaps: dict[str, Any] = field(default_factory=dict)
     improvement_plan: dict[str, Any] = field(default_factory=dict)
     upcoming_invitations: list[dict] = field(default_factory=list)
@@ -271,29 +270,6 @@ def get_dashboard_snapshot(
                 "reason": "At least two completed interviews with scores are required.",
             }
 
-        completion_percent = (
-            round(
-                snapshot.completed_roadmap_tasks / snapshot.total_roadmap_tasks * 100,
-                1,
-            )
-            if snapshot.total_roadmap_tasks > 0
-            else None
-        )
-        if snapshot.total_roadmap_tasks:
-            learning_summary = (
-                f"{snapshot.completed_roadmap_tasks} of {snapshot.total_roadmap_tasks} "
-                "study tasks complete."
-            )
-        else:
-            learning_summary = "No study plan tasks saved yet."
-        snapshot.learning_progress = {
-            "completed_tasks": snapshot.completed_roadmap_tasks,
-            "total_tasks": snapshot.total_roadmap_tasks,
-            "completion_percent": completion_percent,
-            "assessment_count": snapshot.assessment_count,
-            "summary": learning_summary,
-        }
-
         missing_skills = _skill_labels(getattr(latest_match, "missing_skills", None))
         missing_skills.extend(_skill_labels(getattr(latest_match, "skill_gaps", None)))
         missing_skills = _unique(missing_skills)
@@ -431,7 +407,7 @@ def get_dashboard_snapshot(
         if not latest_resume:
             snapshot.recommended_actions.append("Analyze your resume to personalize practice.")
         if not interviews:
-            snapshot.recommended_actions.append("Complete a mock interview to set a baseline.")
+            snapshot.recommended_actions.append("Complete a job interview to set a baseline.")
         for area in analytics.weak_areas or []:
             snapshot.recommended_actions.append(f"Practice {area} questions this week.")
         if latest_match and latest_match.missing_skills:

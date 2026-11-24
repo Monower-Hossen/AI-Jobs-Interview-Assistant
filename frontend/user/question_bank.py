@@ -77,7 +77,7 @@ def show_question_bank() -> None:
 
         if not questions:
             empty_state(
-                "No asked questions yet.", "Complete a mock interview to populate the bank."
+                "No asked questions yet.", "Complete a job interview to populate the bank."
             )
         else:
             categories = sorted({row["Category"] for row in questions})

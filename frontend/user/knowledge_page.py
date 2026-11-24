@@ -5,6 +5,7 @@ from pathlib import Path
 import streamlit as st
 from config.settings import runtime_path, settings
 from services.knowledge_base import get_knowledge_base
+from services.resource_monitor import ResourceBusyError
 from utils.file_utils import save_uploaded_file
 
 from frontend.shared.components import (
@@ -28,8 +29,18 @@ def show_knowledge_page(embedded: bool = False) -> None:
             "Upload documents to ground interviews and answers in your own material",
             ":material/library_books:",
         )
-    kb = get_knowledge_base(st.session_state.user_session_id, st.session_state.get("user_id"))
-    stats = kb.stats()
+    try:
+        kb = get_knowledge_base(st.session_state.user_session_id, st.session_state.get("user_id"))
+        stats = kb.stats()
+    except ResourceBusyError as exc:
+        st.warning(
+            "The knowledge library is temporarily unavailable because system memory is low. "
+            "Close other apps or wait for other heavy work to finish, then retry."
+        )
+        st.caption(str(exc))
+        if st.button("Retry", icon=":material/refresh:", key="kb_resource_retry"):
+            st.rerun()
+        return
 
     kpi_row(
         [

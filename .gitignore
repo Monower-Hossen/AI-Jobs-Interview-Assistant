@@ -19,7 +19,7 @@ ENV/
 .env
 .env.local
 .env.*.local
-!.env.example
+.env.example
 
 # Database
 data/

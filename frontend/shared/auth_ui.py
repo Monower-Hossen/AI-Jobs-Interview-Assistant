@@ -12,7 +12,7 @@ from services.auth_service import (
     update_profile,
 )
 
-from frontend.shared.components import page_header, section, stop_speech
+from frontend.shared.components import section, stop_speech
 
 TRANSIENT_KEYS: tuple[str, ...] = (
     "_ai_provider_health_results",
@@ -171,19 +171,44 @@ def clear_credential_state() -> None:
 
 
 def show_auth_page() -> None:
-    page_header("Welcome", "Sign in to your private interview workspace", ":material/login:")
-    st.caption("Each account has an isolated workspace. Existing local sessions are preserved.")
-    _render_sign_in()
+    try:
+        from frontend.shared.live_session_cleanup import teardown_for_navigation
+
+        teardown_for_navigation()
+    except Exception:
+        pass
+    st.title("Sign in", icon=":material/login:", text_alignment="center")
+    st.caption("Welcome back to your interview workspace.", text_alignment="center")
+    with (
+        st.container(width="stretch", horizontal_alignment="center"),
+        st.container(border=True, width=440),
+    ):
+        _render_sign_in()
+        st.caption("Need access? Contact your administrator.", text_alignment="center")
 
 
 def _render_sign_in() -> None:
     """Render the sign-in form."""
-    with st.form("sign_in_form", border=False):
-        email = st.text_input("Email", placeholder="Enter your email", key="sign_in_email")
-        password = st.text_input(
-            "Password", type="password", placeholder="Enter your password", key="sign_in_password"
+    with st.form("sign_in_form", border=False, width="stretch"):
+        email = st.text_input(
+            "Email",
+            type="email",
+            key="sign_in_email",
+            autocomplete="username",
+            placeholder="you@example.com",
+            required=True,
         )
-        submitted = st.form_submit_button("Sign in", type="primary", width="stretch")
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="sign_in_password",
+            autocomplete="current-password",
+            placeholder="Enter your password",
+            required=True,
+        )
+        submitted = st.form_submit_button(
+            "Sign in", type="primary", icon=":material/login:", width="stretch"
+        )
 
     if submitted:
         clear_credential_state()
@@ -191,7 +216,8 @@ def _render_sign_in() -> None:
             st.error("Email and password are required.", icon=":material/error:")
             return
         try:
-            account = authenticate(email, password)
+            with st.spinner("Signing in…"):
+                account = authenticate(email, password)
             if account is None:
                 st.error(
                     "Invalid email or password, or your account is not active.",

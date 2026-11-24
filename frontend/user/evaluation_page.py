@@ -27,7 +27,7 @@ from frontend.user.interview_page import _ensure_user_session
 def show_evaluation_page() -> None:
     page_header(
         "Answer evaluation",
-        "Evaluate any answer with the same rubric used in mock interviews",
+        "Evaluate any answer with the same rubric used in job interviews",
         ":material/fact_check:",
     )
     st.caption("AI-generated scores are advisory estimates, not objective ground truth.")
@@ -55,7 +55,7 @@ def show_evaluation_page() -> None:
                 if not recent:
                     empty_state(
                         "No answered interview questions found yet.",
-                        "Complete a mock interview first.",
+                        "Complete a job interview first.",
                     )
                     return
                 labels = {

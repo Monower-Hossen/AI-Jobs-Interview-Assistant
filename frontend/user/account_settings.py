@@ -1,5 +1,5 @@
 import streamlit as st
-from services.auth_service import AuthError, get_account, get_account_activity, log_event
+from services.auth_service import AuthError, get_account, get_account_activity
 from services.llm_service import get_provider_registry
 from services.preferences_service import get_user_preferences, update_user_preferences
 
@@ -57,7 +57,7 @@ def _format_timestamp(value) -> str:
 def show_account_settings() -> None:
     page_header(
         "Account settings",
-        "Personalize your workspace, privacy choices, security and account activity.",
+        "Personalize your interview preferences, privacy choices, security and account activity.",
         ":material/tune:",
     )
     user_id = st.session_state.get("user_id")
@@ -77,8 +77,8 @@ def show_account_settings() -> None:
         error_state("Settings could not be loaded.", str(exc))
         return
 
-    preferences_tab, notifications_tab, security_tab, workspace_tab = st.tabs(
-        ["Interview preferences", "Notifications and privacy", "Security", "Workspace"]
+    preferences_tab, notifications_tab, security_tab = st.tabs(
+        ["Interview preferences", "Notifications and privacy", "Security"]
     )
     with preferences_tab:
         _render_interview_preferences(int(user_id), preferences)
@@ -86,8 +86,6 @@ def show_account_settings() -> None:
         _render_notification_preferences(int(user_id), preferences)
     with security_tab:
         _render_security(int(user_id), activity)
-    with workspace_tab:
-        _render_workspace(int(user_id))
 
 
 def _render_interview_preferences(user_id: int, preferences: dict) -> None:
@@ -108,9 +106,7 @@ def _render_interview_preferences(user_id: int, preferences: dict) -> None:
             default_role = st.text_input(
                 "Default target role", max_chars=100, key="account_default_role"
             )
-            difficulty = st.selectbox(
-                "Default difficulty", DIFFICULTIES, key="account_difficulty"
-            )
+            difficulty = st.selectbox("Default difficulty", DIFFICULTIES, key="account_difficulty")
             interview_type = st.selectbox(
                 "Default interview type", INTERVIEW_TYPES, key="account_interview_type"
             )
@@ -205,7 +201,10 @@ def _render_notification_preferences(user_id: int, preferences: dict) -> None:
                 placeholder="e.g. Python, system design",
             )
             weekly_goal = st.number_input(
-                "Weekly learning goal", min_value=1, max_value=40, key="account_learning_weekly_goal"
+                "Weekly learning goal",
+                min_value=1,
+                max_value=40,
+                key="account_learning_weekly_goal",
             )
         with col2:
             preferred_format = st.selectbox(
@@ -268,7 +267,9 @@ def _render_notification_preferences(user_id: int, preferences: dict) -> None:
 
 def _render_security(user_id: int, activity: list[dict]) -> None:
     section("Change password", ":material/key:")
-    st.caption("Your current password is required. Passwords are never shown or stored in plain text.")
+    st.caption(
+        "Your current password is required. Passwords are never shown or stored in plain text."
+    )
     render_password_change_form(
         user_id,
         form_id="account_password_form",
@@ -277,7 +278,9 @@ def _render_security(user_id: int, activity: list[dict]) -> None:
     )
 
     section("Account activity", ":material/history:")
-    st.caption("Recent account events for this workspace. Passwords and credentials are never logged.")
+    st.caption(
+        "Recent account events for this account. Passwords and credentials are never logged."
+    )
     if not activity:
         empty_state("No account activity yet.", "Sign-ins and profile changes will appear here.")
         return
@@ -285,56 +288,6 @@ def _render_security(user_id: int, activity: list[dict]) -> None:
         with st.container(border=True):
             st.markdown(f"**{item['label']}**")
             st.caption(f"{_format_timestamp(item['created_at'])} · {item['message']}")
-
-
-def _render_workspace(user_id: int) -> None:
-    section("AI availability", ":material/cloud:")
-    try:
-        from services.llm_service import get_provider_status
-
-        status = get_provider_status()
-    except Exception:
-        error_state("Provider status is unavailable.", "The provider registry could not be read.")
-    else:
-        providers = status.get("providers", {})
-        ready = [
-            name
-            for name in get_provider_registry()
-            if providers.get(name, {}).get("configured")
-        ]
-        st.write(f"**Active provider:** {str(status.get('active', 'none')).title()}")
-        st.write(f"**Configured providers:** {', '.join(ready) if ready else 'none'}")
-        st.caption("API keys are never shown here. Contact an administrator if none are ready.")
-
-    section("Indexed documents", ":material/library_books:")
-    token = st.session_state.get("user_session_id")
-    if not token:
-        empty_state("No workspace token found.")
-    else:
-        try:
-            from services.knowledge_base import get_knowledge_base
-
-            stats = get_knowledge_base(token, user_id).stats()
-        except Exception as exc:
-            error_state("Workspace library could not be loaded.", str(exc))
-        else:
-            st.metric("Documents", stats.get("documents", 0), border=True)
-            st.metric("Indexed chunks", stats.get("chunks", 0), border=True)
-
-    if st.button("Clear local view state", icon=":material/restart_alt:", width="stretch"):
-        for key in (
-            "job_analysis",
-            "job_text",
-            "job_text_input",
-            "job_text_pending",
-            "match_analysis",
-            "resume_analysis",
-            "resume_scores",
-            "resume_text",
-        ):
-            st.session_state.pop(key, None)
-        log_event("user.view_state_reset", user_id=user_id, message="View state cleared")
-        success_toast("Local view state cleared. Saved records are unchanged.")
 
 
 show_account_settings()

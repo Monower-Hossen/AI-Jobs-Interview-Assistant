@@ -972,3 +972,141 @@ class TestNewPages:
         app.run()
         app.switch_page(page).run()
         assert not app.exception, [str(error.value) for error in app.exception]
+
+
+class TestJobInterviewVoiceAvatar:
+    @staticmethod
+    def _job_state(question_number: int = 1) -> SimpleNamespace:
+        question = SimpleNamespace(
+            question_number=question_number,
+            question_text="Explain API design.",
+            category="Technical",
+            difficulty="medium",
+        )
+        return SimpleNamespace(
+            is_complete=False,
+            current_question=question,
+            job_title="Backend Engineer",
+            company="Acme",
+            consent_given=True,
+            answered_count=question_number - 1,
+            config=SimpleNamespace(mode="voice", target_questions=3),
+        )
+
+    @staticmethod
+    def _started_record() -> dict:
+        from services.ai_avatar_session import (
+            initialize_ai_avatar_state,
+            mark_started,
+            require_avatar_owner,
+        )
+
+        state: dict = {}
+        initialize_ai_avatar_state(state, 7, "voice-token")
+        record = require_avatar_owner(state, 7, "voice-token")
+        mark_started(
+            record,
+            interview_id=11,
+            job_title="Backend Engineer",
+            company="Acme",
+            question_id=1,
+            question_number=1,
+            question_text="Explain API design.",
+            question_category="Technical",
+            question_difficulty="medium",
+        )
+        return record
+
+    @staticmethod
+    def _render(monkeypatch, state: SimpleNamespace):
+        from services import job_interview_service
+        from streamlit.testing.v1 import AppTest
+
+        from frontend.shared import components
+
+        monkeypatch.syspath_prepend(str(PROJECT_ROOT))
+        monkeypatch.syspath_prepend(str(PROJECT_ROOT / "backend"))
+        monkeypatch.setattr(
+            job_interview_service, "get_job_interview_state", lambda *args, **kwargs: state
+        )
+        speak_keys: list[str] = []
+        stopped: list[str] = []
+        monkeypatch.setattr(
+            components, "speak_text", lambda text, key="default": speak_keys.append(key)
+        )
+        monkeypatch.setattr(
+            components, "stop_speech", lambda key="default": stopped.append(key)
+        )
+        app = AppTest.from_file(
+            str(PROJECT_ROOT / "frontend" / "user" / "job_interview.py"), default_timeout=30
+        )
+        app.session_state["user_id"] = 7
+        app.session_state["user_session_id"] = "voice-token"
+        app.session_state["_job_interview_active_id"] = 11
+        app.run()
+        return app, speak_keys, stopped
+
+    def test_voice_mode_renders_avatar_with_stable_speech_key(self, monkeypatch) -> None:
+        app, speak_keys, stopped = self._render(monkeypatch, self._job_state())
+
+        assert not app.exception, [str(error.value) for error in app.exception]
+        captions = "\n".join(str(item.value) for item in app.caption)
+        assert "AI avatar: Speaking" in captions
+        assert speak_keys == ["job_avatar_11_1_1"]
+        assert stopped == []
+        assert app.session_state["ai_avatar_state"]["status"] == "speaking"
+
+        app.run()
+        assert not app.exception, [str(error.value) for error in app.exception]
+        assert speak_keys == ["job_avatar_11_1_1", "job_avatar_11_1_1"]
+        assert stopped == []
+
+    def test_voice_mode_transitions_question_and_microphone_states(self, monkeypatch) -> None:
+        app, speak_keys, stopped = self._render(monkeypatch, self._job_state())
+        record = app.session_state["ai_avatar_state"]
+
+        next(
+            button for button in app.button if button.label == "I heard the question"
+        ).click().run()
+        assert record["status"] == "waiting"
+        assert stopped == ["ai_avatar"]
+        assert any(button.label == "Answer with microphone" for button in app.button)
+
+        next(button for button in app.button if button.label == "Repeat question").click().run()
+        assert record["status"] == "speaking"
+        assert record["tts_key"] == 2
+        assert speak_keys[-1] == "job_avatar_11_1_2"
+
+        next(
+            button for button in app.button if button.label == "I heard the question"
+        ).click().run()
+        next(button for button in app.button if button.label == "Answer with microphone").click().run()
+        assert record["status"] == "listening"
+
+    def test_helper_moves_speaking_to_listening_without_duplicate_speech(self, monkeypatch) -> None:
+        from frontend.user import job_interview
+
+        stopped: list[str] = []
+        monkeypatch.setattr(
+            job_interview, "stop_speech", lambda key="default": stopped.append(key)
+        )
+        record = self._started_record()
+
+        job_interview._ensure_voice_avatar_listening(record)
+        assert record["status"] == "listening"
+        assert stopped == ["ai_avatar"]
+
+        job_interview._ensure_voice_avatar_listening(record)
+        assert record["status"] == "listening"
+        assert stopped == ["ai_avatar"]
+        assert job_interview._voice_avatar_speech_key(record) == "job_avatar_11_1_1"
+
+    def test_voice_integration_wires_submit_and_cleanup(self) -> None:
+        source = (PROJECT_ROOT / "frontend" / "user" / "job_interview.py").read_text(
+            encoding="utf-8"
+        )
+        assert "speak_text(question_text, key=_voice_avatar_speech_key(voice_record))" in source
+        assert "mark_submitted(voice_record, submitted.current_question)" in source
+        assert "set_transcript(voice_record, text)" in source
+        assert "clear_avatar_session(" in source
+        assert "stop_speech(_AVATAR_SPEECH_KEY)" in source

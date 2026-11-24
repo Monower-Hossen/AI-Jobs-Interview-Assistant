@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LEARNING_PROGRESS_PAGE = "frontend/user/learning_progress.py"
 IMPROVEMENT_PLANS_PAGE = "frontend/user/improvement_plans.py"
 LEARNING_PROGRESS_VIEW = "frontend/user/learning_progress_view.py"
 
@@ -18,13 +17,9 @@ ORIGINAL_ALIASES = {
     "job": "frontend/user/job_page.py",
     "job_description": "frontend/user/job_page.py",
     "job_matcher": "frontend/user/job_page.py",
-    "interview_setup": "frontend/user/ai_avatar_interview.py",
-    "interview": "frontend/user/ai_avatar_interview.py",
-    "mock_interview": "frontend/user/ai_avatar_interview.py",
+    "interview_setup": "frontend/user/job_interview.py",
+    "interview": "frontend/user/job_interview.py",
     "job_interview": "frontend/user/job_interview.py",
-    "ai_avatar": "frontend/user/ai_avatar_interview.py",
-    "ai_avatar_interview": "frontend/user/ai_avatar_interview.py",
-    "legacy_mock_interview": "frontend/user/mock_interview.py",
     "live_webcam": "frontend/user/live_webcam_interview.py",
     "live_webcam_interview": "frontend/user/live_webcam_interview.py",
     "live_recording_history": "frontend/user/live_recording_history.py",
@@ -111,12 +106,16 @@ def test_all_original_aliases_are_preserved() -> None:
         assert (PROJECT_ROOT / target).exists(), target
 
 
-def test_new_wrapper_aliases_resolve() -> None:
+def test_improvement_plans_alias_resolves() -> None:
     pages = _navigation_pages()
-    assert pages["learning_progress"] == LEARNING_PROGRESS_PAGE
     assert pages["improvement_plans"] == IMPROVEMENT_PLANS_PAGE
-    assert (PROJECT_ROOT / LEARNING_PROGRESS_PAGE).exists()
     assert (PROJECT_ROOT / IMPROVEMENT_PLANS_PAGE).exists()
+
+
+def test_learning_progress_route_is_removed() -> None:
+    pages = _navigation_pages()
+    assert "learning_progress" not in pages
+    assert not (PROJECT_ROOT / "frontend/user/learning_progress.py").exists()
 
 
 def test_visible_sidebar_has_no_duplicate_targets() -> None:
@@ -130,26 +129,20 @@ def test_visible_sidebar_has_no_duplicate_targets() -> None:
     assert len(visible_paths) == len(set(visible_paths))
 
 
-def test_legacy_mock_interview_is_hidden_but_registered() -> None:
+def test_mock_interview_routes_are_removed() -> None:
     studio = _user_page_groups()["Interview Studio"]
-    legacy = [entry for entry in studio if entry.get("path") == "frontend/user/mock_interview.py"]
-    assert len(legacy) == 1
-    assert legacy[0]["visibility"] == "hidden"
-    assert legacy[0]["url_path"] == "legacy-mock-interview"
-    assert (PROJECT_ROOT / "frontend/user/mock_interview.py").exists()
-
-
-def test_learning_progress_reuses_shared_renderer() -> None:
-    page_tree = ast.parse((PROJECT_ROOT / LEARNING_PROGRESS_PAGE).read_text(encoding="utf-8"))
-    view_imports = [
-        node
-        for node in page_tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "frontend.user.learning_progress_view"
+    assert not [
+        entry
+        for entry in studio
+        if "mock" in str(entry.get("title", "")).lower()
+        or "mock" in str(entry.get("url_path", "")).lower()
     ]
-    assert view_imports
-    assert any(alias.name == "render_learning_progress" for alias in view_imports[0].names)
+    pages = _navigation_pages()
+    for alias in ("mock_interview", "ai_avatar", "ai_avatar_interview", "legacy_mock_interview"):
+        assert alias not in pages
 
+
+def test_learning_center_reuses_shared_renderer() -> None:
     center_source = (PROJECT_ROOT / "frontend/user/learning_center.py").read_text(encoding="utf-8")
     assert "from frontend.user.learning_progress_view import" in center_source
     assert "render_learning_progress(session_id, snapshot)" in center_source
@@ -317,30 +310,3 @@ def test_improvement_plans_page_is_owner_scoped(wrapper_db, monkeypatch):
     assert "No improvement plans yet" in info_text
     markdown_text = " ".join(str(item.value) for item in app.markdown)
     assert "Practice caching questions" not in markdown_text
-
-
-def test_learning_progress_page_renders_shared_view(wrapper_db, monkeypatch):
-    app = _run_app("user1", "user-1", wrapper_db, monkeypatch, LEARNING_PROGRESS_PAGE)
-    labels = [str(item.label) for item in app.metric]
-    assert "Interview readiness" in labels
-    assert "Study plan tasks" in labels
-    assert "Completed assessments" in labels
-    assert "Activity streak" in labels
-
-
-def test_learning_progress_page_requires_workspace(wrapper_db, monkeypatch):
-    from services.auth_service import get_account
-    from streamlit.testing.v1 import AppTest
-
-    account = get_account(wrapper_db["user1"])
-    app = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=30)
-    app.session_state["db_initialized"] = True
-    app.session_state["user_id"] = wrapper_db["user1"]
-    app.session_state["user_session_id"] = "foreign-token"
-    app.session_state["account"] = account
-    app.session_state["must_change_password"] = False
-    app.run()
-    app.switch_page(LEARNING_PROGRESS_PAGE).run()
-    assert not app.exception, [str(error.value) for error in app.exception]
-    info_text = " ".join(str(item.value) for item in app.info)
-    assert "No workspace found" in info_text

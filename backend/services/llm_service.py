@@ -108,7 +108,14 @@ def is_retryable_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(
         token in msg
-        for token in ("timeout", "timed out", "temporarily unavailable", "service unavailable")
+        for token in (
+            "timeout",
+            "timed out",
+            "deadline exceeded",
+            "deadline_exceeded",
+            "temporarily unavailable",
+            "service unavailable",
+        )
     )
 
 
@@ -473,24 +480,28 @@ class _HTTPProvider(LLMProvider):
         if kwargs.get("json_mode", False) and self.supports_json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        response = self._post("/chat/completions", payload)
-        response.raise_for_status()
-        data = response.json()
+        empty_attempts = min(2, _max_attempts())
+        for attempt in range(empty_attempts):
+            response = self._post("/chat/completions", payload)
+            response.raise_for_status()
+            data = response.json()
 
-        choices = data.get("choices") or []
-        content = choices[0].get("message", {}).get("content", "") if choices else ""
-        usage = data.get("usage")
+            choices = data.get("choices") or []
+            content = choices[0].get("message", {}).get("content", "") if choices else ""
+            usage = data.get("usage")
 
-        if not content or not content.strip():
-            raise ValueError("Empty response from " + self.provider_name)
+            if content and content.strip():
+                return LLMResponse(
+                    content=content,
+                    model=self.model,
+                    provider=self.provider_name,
+                    usage=usage,
+                    latency_ms=(time.perf_counter() - start) * 1000,
+                )
+            if attempt + 1 < empty_attempts:
+                time.sleep(_retry_delay(None, attempt))
 
-        return LLMResponse(
-            content=content,
-            model=self.model,
-            provider=self.provider_name,
-            usage=usage,
-            latency_ms=(time.perf_counter() - start) * 1000,
-        )
+        raise ValueError("Empty response from " + self.provider_name)
 
     def generate_structured(self, prompt: str, response_model: type[T], **kwargs) -> T:
         return _generate_structured(self, prompt, response_model, **kwargs)

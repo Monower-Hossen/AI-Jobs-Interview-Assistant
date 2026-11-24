@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,12 +13,10 @@ from services.ai_avatar_session import (
     WAITING,
     AvatarSessionError,
     begin_listening,
-    default_state,
     initialize_ai_avatar_state,
     mark_question_spoken,
     mark_started,
     mark_submitted,
-    owner_fingerprint,
     pause,
     register_audio,
     require_avatar_owner,
@@ -29,8 +25,6 @@ from services.ai_avatar_session import (
 )
 from streamlit.testing.v1 import AppTest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PAGE_PATH = PROJECT_ROOT / "frontend" / "user" / "ai_avatar_interview.py"
 USER_ID = 7
 TOKEN = "avatar-token"
 
@@ -307,139 +301,6 @@ def test_sign_out_cleanup_includes_avatar_transient_prefixes() -> None:
     assert "_avatar_" in _TRANSIENT_PREFIXES
     assert "_spoken_text_" in _TRANSIENT_PREFIXES
     assert "_speech_stopped_" in _TRANSIENT_PREFIXES
-
-
-def _prepare_app_test(monkeypatch) -> AppTest:
-    monkeypatch.syspath_prepend(str(PROJECT_ROOT))
-    monkeypatch.syspath_prepend(str(PROJECT_ROOT / "backend"))
-    return AppTest.from_file(str(PAGE_PATH), default_timeout=30)
-
-
-def test_ai_avatar_page_requires_auth() -> None:
-    at = AppTest.from_file(str(PAGE_PATH), default_timeout=30)
-    at.run()
-    assert any("Sign in" in str(error.value) for error in at.error)
-
-
-def test_ai_avatar_page_renders_setup(monkeypatch) -> None:
-    job = SimpleNamespace(
-        id=3,
-        title="Backend Engineer",
-        company="Acme",
-        experience_level="Mid",
-        description="Build Python APIs",
-        responsibilities=["Design APIs"],
-    )
-    monkeypatch.setattr(
-        "services.job_interview_service.list_job_interviews", lambda **kwargs: []
-    )
-    monkeypatch.setattr("services.job_post_service.list_jobs", lambda: [job])
-    monkeypatch.setattr(
-        "services.job_post_service.get_job_post", lambda *args, **kwargs: job
-    )
-    at = _prepare_app_test(monkeypatch)
-    at.session_state["user_id"] = USER_ID
-    at.session_state["user_session_id"] = TOKEN
-    at.run()
-    assert not list(at.exception)
-    assert len(at.selectbox) >= 1
-    assert any("Start Mock Interview" in str(button.label) for button in at.button)
-
-
-def test_ai_avatar_page_renders_active_speaking_state(monkeypatch) -> None:
-    record = default_state()
-    record.update(
-        {
-            "owner_fingerprint": owner_fingerprint(USER_ID, TOKEN),
-            "status": SPEAKING,
-            "interview_id": 11,
-            "job_title": "Backend Engineer",
-            "company": "Acme",
-            "question_id": 1,
-            "question_number": 1,
-            "question_text": "Explain API design.",
-            "question_category": "Technical",
-            "question_difficulty": "medium",
-            "tts_key": 1,
-            "consent_given": True,
-        }
-    )
-    job_state = SimpleNamespace(
-        is_complete=False,
-        current_question=_next_question(1),
-        job_title="Backend Engineer",
-        company="Acme",
-        consent_given=True,
-        answered_count=0,
-        config=SimpleNamespace(mode="avatar", target_questions=5),
-    )
-    monkeypatch.setattr(
-        "services.ai_avatar_interview_service.get_avatar_interview_state",
-        lambda *args, **kwargs: job_state,
-    )
-    at = _prepare_app_test(monkeypatch)
-    at.session_state["user_id"] = USER_ID
-    at.session_state["user_session_id"] = TOKEN
-    at.session_state["ai_avatar_state"] = record
-    at.run()
-    assert not list(at.exception)
-    assert any("Explain API design." in str(item.value) for item in at.markdown)
-    assert any("I heard the question" in str(button.label) for button in at.button)
-
-
-def test_ai_avatar_page_does_not_stop_speech_on_speaking_rerun(monkeypatch) -> None:
-    _, record = _started_state()
-    record["tts_key"] = 1
-    monkeypatch.setattr(
-        "services.ai_avatar_interview_service.get_avatar_interview_state",
-        lambda *args, **kwargs: _active_job_state(),
-    )
-    stops: list[str] = []
-    speaks: list[str] = []
-    monkeypatch.setattr(
-        "frontend.shared.components.stop_speech", lambda key="default": stops.append(key)
-    )
-    monkeypatch.setattr(
-        "frontend.shared.components.speak_text",
-        lambda text, key="default": speaks.append(key),
-    )
-    at = _prepare_app_test(monkeypatch)
-    at.session_state["user_id"] = USER_ID
-    at.session_state["user_session_id"] = TOKEN
-    at.session_state["ai_avatar_state"] = record
-    at.run()
-    at.run()
-    assert len(speaks) == 2
-    assert set(speaks) == {"avatar_11_1_1"}
-    assert stops == []
-    heard = next(button for button in at.button if button.label == "I heard the question")
-    heard.click().run()
-    assert stops == ["ai_avatar"]
-
-
-def test_ai_avatar_transcript_does_not_reset_widget_default(monkeypatch, caplog) -> None:
-    _, record = _started_state()
-    record.update(
-        {
-            "status": WAITING,
-            "transcript": "Edited transcript",
-            "transcript_key": 0,
-            "audio_present": False,
-        }
-    )
-    monkeypatch.setattr(
-        "services.ai_avatar_interview_service.get_avatar_interview_state",
-        lambda *args, **kwargs: _active_job_state(),
-    )
-    at = _prepare_app_test(monkeypatch)
-    at.session_state["user_id"] = USER_ID
-    at.session_state["user_session_id"] = TOKEN
-    at.session_state["ai_avatar_state"] = record
-    with caplog.at_level(logging.WARNING):
-        at.run()
-        at.run()
-    assert not any("created with a default value" in item.message for item in caplog.records)
-    assert at.text_area[0].value == "Edited transcript"
 
 
 def test_sign_out_stops_avatar_speech(monkeypatch) -> None:

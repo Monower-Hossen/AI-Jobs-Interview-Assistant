@@ -48,7 +48,6 @@ def extract_json_from_text(text: str) -> dict | None:
     in_string = False
     escape_next = False
     outer_start = -1
-    outer_end = -1
     for i in range(start, len(cleaned)):
         ch = cleaned[i]
         if escape_next:
@@ -67,14 +66,17 @@ def extract_json_from_text(text: str) -> dict | None:
                 outer_start = i
             depth += 1
         elif ch == "}":
+            if depth == 0:
+                continue
             depth -= 1
             if depth == 0 and outer_start != -1:
-                outer_end = i
-                candidate = cleaned[outer_start : outer_end + 1]
+                candidate = cleaned[outer_start : i + 1]
                 parsed = safe_json_parse(candidate)
                 if isinstance(parsed, dict):
                     return parsed
-                break
+
+    if depth > 0:
+        return None
 
     json_pattern = r"\{[\s\S]*?\}"
     matches = re.findall(json_pattern, text)

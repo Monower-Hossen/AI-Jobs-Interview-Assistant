@@ -165,15 +165,6 @@ def is_document_file(filename: str) -> bool:
     return get_file_extension(filename) in doc_extensions
 
 
-def cleanup_temp_files(file_paths: list) -> None:
-    for path in file_paths:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-
-
 def format_file_size(size_bytes: float) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
         if size_bytes < 1024:

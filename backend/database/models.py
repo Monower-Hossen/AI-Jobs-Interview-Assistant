@@ -485,10 +485,22 @@ class LearningRoadmap(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("user_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
+    summary = Column(Text, default="")
     focus_skills = Column(JSON, default=list)
     source_interview_id = Column(
         Integer, ForeignKey("interview_sessions.id", ondelete="SET NULL"), nullable=True
     )
+    career_target = Column(String(255), default="")
+    existing_skills = Column(JSON, default=list)
+    skill_level = Column(String(40), default="intermediate")
+    hours_per_day = Column(Float, default=1.0)
+    duration_weeks = Column(Integer, default=4)
+    status = Column(String(20), default="active", index=True)
+    phases = Column(JSON, default=list)
+    skill_gap = Column(JSON, default=dict)
+    recommendations = Column(JSON, default=list)
+    topic_mastery = Column(JSON, default=dict)
+    generation_fingerprint = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime, nullable=True)
 
@@ -512,6 +524,12 @@ class LearningTask(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, default="")
     topic = Column(String(120), default="")
+    task_type = Column(String(24), default="daily", index=True)
+    week_number = Column(Integer, nullable=True, index=True)
+    day_number = Column(Integer, nullable=True)
+    objective = Column(Text, default="")
+    estimated_minutes = Column(Integer, default=30)
+    priority = Column(String(20), default="medium")
     resources = Column(JSON, default=list)
     practice_questions = Column(JSON, default=list)
     status = Column(String(20), default="pending", index=True)
@@ -525,6 +543,11 @@ class Assessment(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("user_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    roadmap_id = Column(
+        Integer, ForeignKey("learning_roadmaps.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    week_number = Column(Integer, nullable=True, index=True)
+    question_count = Column(Integer, default=0)
     topic = Column(String(120), nullable=False)
     difficulty = Column(String(20), default="medium")
     questions = Column(JSON, default=list)

@@ -677,13 +677,7 @@ class TestStage3DashboardEnhancements:
         assert first.performance_comparison["previous_score"] == 7.0
         assert first.performance_comparison["difference"] == 1.0
         assert first.performance_comparison["direction"] == "improved"
-        assert first.learning_progress == {
-            "completed_tasks": 1,
-            "total_tasks": 2,
-            "completion_percent": 50.0,
-            "assessment_count": 1,
-            "summary": "1 of 2 study tasks complete.",
-        }
+        assert not hasattr(first, "learning_progress")
         assert "Kubernetes" in first.skill_gaps["missing_skills"]
         assert "confidence" in first.skill_gaps["weak_areas"]
         assert first.improvement_plan["available"] is True
@@ -693,8 +687,7 @@ class TestStage3DashboardEnhancements:
 
         assert second.interview_history_summary["total_sessions"] == 1
         assert second.performance_comparison["available"] is False
-        assert second.learning_progress["total_tasks"] == 0
-        assert second.learning_progress["completion_percent"] is None
+        assert not hasattr(second, "learning_progress")
         assert second.skill_gaps["has_data"] is False
         assert second.improvement_plan["available"] is False
         assert second.recent_notifications == []
@@ -727,15 +720,13 @@ class TestStage3DashboardEnhancements:
         assert second.performance_comparison["available"] is False
         assert second.interview_history_summary["latest_score"] is None
 
-    def test_learning_and_skill_sections_have_honest_empty_states(self, dashboard_db):
+    def test_skill_sections_have_honest_empty_states(self, dashboard_db):
         from services.dashboard_service import get_dashboard_snapshot
 
         snapshot = get_dashboard_snapshot(
             dashboard_db["session1"], dashboard_db["user1"], session_token="user-1"
         )
-        assert snapshot.learning_progress["total_tasks"] == 0
-        assert snapshot.learning_progress["completion_percent"] is None
-        assert snapshot.learning_progress["summary"] == "No study plan tasks saved yet."
+        assert not hasattr(snapshot, "learning_progress")
         assert snapshot.skill_gaps["has_data"] is False
         assert snapshot.skill_gaps["items"] == []
         assert snapshot.improvement_plan["available"] is False
@@ -843,20 +834,27 @@ class TestStage3DashboardEnhancements:
         for title in (
             "Performance overview",
             "Continue preparation",
-            "Recent activity",
             "AI recommendations",
             "Upcoming activities",
         ):
             assert title in headings, (title, headings)
+        assert "Recent activity" not in headings, headings
+        assert "Learning progress" not in headings, headings
+        captions = [node.value for node in app.caption]
+        assert not [
+            caption
+            for caption in captions
+            if "Study plan:" in caption or "No study plan yet" in caption
+        ], captions
         labels = [button.label for button in app.button]
         for label in (
             "Start interview",
-            "Continue mock interview",
+            "Continue job interview",
             "Resume analysis",
             "Job preparation",
             "Continue learning",
-            "Open history",
             "Open invitations",
             "Open notifications",
         ):
             assert label in labels, (label, labels)
+        assert "Open history" not in labels, labels
