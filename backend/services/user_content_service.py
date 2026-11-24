@@ -1,5 +1,15 @@
-from database import LearningNote, QuestionBookmark, get_db_context
+from database import (
+    InterviewQuestion,
+    InterviewSession,
+    LearningNote,
+    QuestionBookmark,
+    get_db_context,
+)
 from services.auth_service import require_owned_session_id
+
+
+def _normalized_question_text(text: str) -> str:
+    return " ".join(str(text or "").split()).casefold()
 
 
 def list_bookmarks(session_id: int, actor_user_id: int | None) -> list[dict]:
@@ -24,6 +34,35 @@ def list_bookmarks(session_id: int, actor_user_id: int | None) -> list[dict]:
         ]
 
 
+def list_asked_questions(session_id: int, actor_user_id: int | None) -> list[dict]:
+    require_owned_session_id(session_id, actor_user_id)
+    with get_db_context() as db:
+        rows = (
+            db.query(InterviewQuestion)
+            .join(
+                InterviewSession,
+                InterviewQuestion.interview_session_id == InterviewSession.id,
+            )
+            .filter(InterviewSession.session_id == session_id)
+            .order_by(InterviewQuestion.asked_at.desc(), InterviewQuestion.id.desc())
+            .all()
+        )
+        return [
+            {
+                "id": int(row.id),
+                "question_number": int(row.question_number or 0),
+                "question_text": str(row.question_text or ""),
+                "category": str(row.category or "technical"),
+                "difficulty": str(row.difficulty or "medium"),
+                "overall_score": row.overall_score,
+                "expected_key_points": list(row.expected_key_points or []),
+                "suggested_answer": str(row.suggested_answer or ""),
+                "asked_at": row.asked_at,
+            }
+            for row in rows
+        ]
+
+
 def add_bookmark(
     session_id: int,
     question_text: str,
@@ -40,16 +79,15 @@ def add_bookmark(
     if len(text) > 4000:
         raise ValueError("Question text is too long.")
     with get_db_context() as db:
-        existing = (
+        normalized = _normalized_question_text(text)
+        existing_rows = (
             db.query(QuestionBookmark)
-            .filter(
-                QuestionBookmark.session_id == session_id,
-                QuestionBookmark.question_text == text,
-            )
-            .first()
+            .filter(QuestionBookmark.session_id == session_id)
+            .all()
         )
-        if existing:
-            return int(existing.id)
+        for existing in existing_rows:
+            if _normalized_question_text(existing.question_text) == normalized:
+                return int(existing.id)
         row = QuestionBookmark(
             session_id=session_id,
             question_text=text,
