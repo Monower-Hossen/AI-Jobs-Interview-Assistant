@@ -1,12 +1,24 @@
+import logging
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 from services.job_analyzer import JobAnalysisResult, get_job_input_limit
 from services.job_matcher import ResumeJobMatchResult
+from services.llm_service import _error_message as redacted_error_message
 from services.llm_service import get_llm_service
 from services.resume_analyzer import ResumeAnalysisResult, get_resume_input_limit
 from utils.helpers import truncate_text
+
+logger = logging.getLogger(__name__)
+
+_MAX_GENERATION_ATTEMPTS = 2
+_MAX_QUESTION_TEXT_LENGTH = 4000
+_MAX_TOTAL_QUESTIONS = 50
+_GENERATION_ERROR_MESSAGE = (
+    "Question generation could not produce the requested number of valid, unique questions "
+    "after two attempts. Check the AI provider configuration and try again."
+)
 
 
 class QuestionCategory(str, Enum):
@@ -123,6 +135,69 @@ class QuestionSet(BaseModel):
         return data
 
 
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _clean_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _category_distribution(questions: list[InterviewQuestion]) -> dict[str, int]:
+    distribution: dict[str, int] = {}
+    for question in questions:
+        category = _enum_value(question.category)
+        distribution[category] = distribution.get(category, 0) + 1
+    return distribution
+
+
+def _validate_generated_questions(result: QuestionSet, requested_count: int) -> QuestionSet:
+    if not isinstance(result, QuestionSet):
+        result = QuestionSet.model_validate(result)
+
+    cleaned: list[InterviewQuestion] = []
+    seen: set[str] = set()
+    for question in result.questions:
+        text = _clean_text(question.question_text)
+        if not text:
+            raise ValueError("Generated question text is empty.")
+        if len(text) > _MAX_QUESTION_TEXT_LENGTH:
+            raise ValueError("Generated question text is too long.")
+        if int(question.question_number) < 1:
+            raise ValueError("Generated question number is invalid.")
+        category = _normalize_label(_enum_value(question.category), "")
+        difficulty = _normalize_label(_enum_value(question.difficulty), "")
+        if category not in _VALID_CATEGORIES:
+            raise ValueError("Generated question has an invalid category.")
+        if difficulty not in _VALID_DIFFICULTIES:
+            raise ValueError("Generated question has an invalid difficulty.")
+        if not isinstance(question.expected_key_points, list) or not isinstance(
+            question.follow_up_hints, list
+        ):
+            raise TypeError("Generated question is missing required fields.")
+
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(
+            question.model_copy(
+                update={"question_number": len(cleaned) + 1, "question_text": text}
+            )
+        )
+
+    if len(cleaned) != requested_count:
+        raise ValueError(
+            f"Expected {requested_count} unique questions, received {len(cleaned)}."
+        )
+
+    return QuestionSet(
+        questions=cleaned,
+        total_count=len(cleaned),
+        category_distribution=_category_distribution(cleaned),
+    )
+
+
 QUESTION_GENERATION_PROMPT = """You are an expert interview coach. Generate personalized interview questions based on the candidate's resume, target job, and skill gaps.
 
 CANDIDATE RESUME:
@@ -144,7 +219,7 @@ CONFIGURATION:
 KNOWLEDGE BASE CONTEXT (use it when relevant):
 {knowledge_context}
 
-Generate {total_questions} highly personalized interview questions. Distribute across categories:
+Generate exactly {total_questions} highly personalized interview questions with unique, non-empty question text. Distribute across categories:
 - Technical: Core technical skills from job requirements
 - HR: Cultural fit, motivation, career goals
 - Behavioral: Past behavior predicting future performance (STAR method)
@@ -183,7 +258,7 @@ Return ONLY valid JSON matching this exact structure:
 The category_distribution must sum to total_count ({total_questions}). Use lowercase category names."""
 
 
-RETRY_QUESTION_PROMPT = """Generate {total_questions} interview questions. Return ONLY a single valid JSON object with this EXACT structure:
+RETRY_QUESTION_PROMPT = """Generate exactly {total_questions} interview questions. Every question must be unique and non-empty. Return ONLY a single valid JSON object with this EXACT structure:
 
 {
   "questions": [
@@ -195,7 +270,8 @@ RETRY_QUESTION_PROMPT = """Generate {total_questions} interview questions. Retur
 }
 
 CRITICAL RULES:
-- "questions" MUST be an array of OBJECTS (not strings)
+- "questions" MUST be an array of exactly {total_questions} OBJECTS (not strings)
+- Do not repeat or paraphrase a question; every question_text must be unique and non-empty
 - Each question object MUST have: question_number (int), category (lowercase), difficulty (easy/medium/hard), question_text (string), expected_key_points (array of strings), follow_up_hints (array of strings)
 - "category_distribution" MUST use lowercase keys and sum to total_count
 - NO markdown, NO explanation, NO ```json fences
@@ -218,6 +294,9 @@ class InterviewGenerator:
         knowledge_context: str = "",
         interview_type: str = "Full Interview",
     ) -> QuestionSet:
+
+        if not isinstance(total_questions, int) or not 1 <= total_questions <= _MAX_TOTAL_QUESTIONS:
+            raise ValueError(f"Total questions must be between 1 and {_MAX_TOTAL_QUESTIONS}.")
 
         if categories is None:
             categories = [
@@ -250,35 +329,40 @@ class InterviewGenerator:
             knowledge_context=knowledge_context[:4000] or "None provided",
             interview_type=interview_type,
         )
+        retry_prompt = RETRY_QUESTION_PROMPT.replace(
+            "{total_questions}", str(total_questions)
+        )
+        retry_prompt += (
+            "\n\nCONFIGURATION:\n"
+            f"- Difficulty: {difficulty}\n"
+            f"- Categories: {', '.join(category_names)}\n"
+            f"- Focus areas: {', '.join(focus) if focus else 'None specified'}\n"
+            f"- Interview type: {interview_type}\n"
+            f"- Knowledge context: {knowledge_context[:2000] or 'None provided'}\n"
+            "\n\nRESUME:\n"
+            + truncate_text(resume.model_dump_json(indent=2), resume_limit)
+            + "\n\nJOB:\n"
+            + truncate_text(job.model_dump_json(indent=2), job_limit)
+            + "\n\nMATCH:\n"
+            + truncate_text(match.model_dump_json(indent=2), job_limit)
+        )
 
-        try:
-            result = self.llm.generate_structured(prompt, QuestionSet)
-            result.total_count = len(result.questions)
-            return result
-        except Exception as primary_exc:
-            retry_prompt = RETRY_QUESTION_PROMPT.replace("{total_questions}", str(total_questions))
-            retry_prompt = (
-                retry_prompt
-                + "\n\nRESUME:\n"
-                + truncate_text(resume.model_dump_json(indent=2), resume_limit)
-                + "\n\nJOB:\n"
-                + truncate_text(job.model_dump_json(indent=2), job_limit)
-                + "\n\nMATCH:\n"
-                + truncate_text(match.model_dump_json(indent=2), job_limit)
-            )
-
+        last_error: Exception | None = None
+        for attempt in range(_MAX_GENERATION_ATTEMPTS):
+            active_prompt = prompt if attempt == 0 else retry_prompt
+            kwargs: dict[str, Any] = {} if attempt == 0 else {"max_tokens": 3000}
             try:
-                retry_result = self.llm.generate_structured(
-                    retry_prompt, QuestionSet, max_tokens=3000
+                result = self.llm.generate_structured(active_prompt, QuestionSet, **kwargs)
+                return _validate_generated_questions(result, total_questions)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Question generation attempt %d failed: %s",
+                    attempt + 1,
+                    redacted_error_message(exc),
                 )
-                retry_result.total_count = len(retry_result.questions)
-                return retry_result
-            except Exception as retry_exc:
-                raise RuntimeError(
-                    "Question generation failed after two attempts. Check the AI provider configuration "
-                    "and try again. No placeholder questions were created. "
-                    f"Initial error: {primary_exc}. Retry error: {retry_exc}"
-                ) from retry_exc
+
+        raise RuntimeError(_GENERATION_ERROR_MESSAGE) from last_error
 
     def generate_follow_up(
         self,
@@ -329,7 +413,12 @@ Projects: {len(resume.projects)}
         try:
             return self.llm.generate_structured(prompt, InterviewQuestion)
         except Exception as exc:
-            raise RuntimeError(f"Follow-up question generation failed: {exc}") from exc
+            logger.warning(
+                "Follow-up question generation failed: %s", redacted_error_message(exc)
+            )
+            raise RuntimeError(
+                "Follow-up question generation could not complete. Check the AI provider configuration and try again."
+            ) from exc
 
 
 def generate_interview_questions(
