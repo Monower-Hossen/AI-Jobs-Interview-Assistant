@@ -130,8 +130,11 @@ cd ai-interview-assistant
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 
-# Install dependencies
+# Install runtime dependencies
 pip install -r requirements.txt
+
+# Install test and quality-check dependencies
+pip install pytest pytest-cov ruff black mypy av
 
 # Copy environment template
 Copy-Item .env.example .env
@@ -153,6 +156,7 @@ pip install uv
 uv venv
 .venv\Scripts\Activate.ps1
 uv pip install -r requirements.txt
+uv pip install pytest pytest-cov ruff black mypy av
 ```
 
 ### Linux/macOS
@@ -163,6 +167,7 @@ cd ai-interview-assistant
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install pytest pytest-cov ruff black mypy av
 cp .env.example .env
 # Edit .env with your API keys
 streamlit run app.py
@@ -201,10 +206,10 @@ Use `.env.example` as the complete, secrets-free variable contract. The most imp
 ```bash
 # Provider routing
 AI_PROVIDER_MODE=auto
-AI_PRIMARY_PROVIDER=gemini
+AI_PRIMARY_PROVIDER=groq
 AI_FALLBACK_ENABLED=true
 LLM_PROVIDER=auto
-PROVIDER_PRIORITY=gemini,groq,ollama
+PROVIDER_PRIORITY=groq,gemini,ollama
 LLM_MIN_REQUEST_INTERVAL=0
 AI_REQUEST_TIMEOUT=60
 AI_MAX_RETRIES=2
@@ -302,46 +307,80 @@ The app will open at `http://localhost:8501`
 
 ## Testing
 
-```bash
-# Run all tests
-pytest tests/ -v
+Tests use pytest. They do not require real LLM API keys or a populated `.env`:
+provider calls are monkeypatched, SQLite databases and media files use pytest's
+`tmp_path`, and Streamlit pages are exercised with `AppTest`.
 
-# Run with coverage
-pytest tests/ --cov=backend.services --cov=backend.rag --cov=backend.utils --cov=backend.database -v
+Run all commands from the repository root using the project virtual environment.
 
-# Run specific test file
-pytest tests/test_core.py -v
-
-# Run tests with coverage report
-pytest tests/ --cov=backend.services --cov=backend.rag --cov=backend.utils --cov=backend.database --cov-report=html
-```
-
-### Linting & Formatting
+### Install test dependencies
 
 ```bash
-# Lint with Ruff
-ruff check .
-
-# Auto-fix lint issues
-ruff check . --fix
-
-# Format with Black
-black .
-
-# Type check with mypy
-mypy .
-
-# Run all checks (CI style)
-ruff check . && black --check . && mypy .
+python -m pip install -r requirements.txt
+python -m pip install pytest pytest-cov ruff black mypy av
 ```
 
-### Test Structure
-- `tests/test_core.py` - Models, utilities, services, RAG, provider fallback, and persistence
-- `tests/test_user_dashboard.py` - Page wiring, owner scope, dashboard, RAG, and preferences
-- `tests/test_user_management.py` - Admin workflows, login/logout, RBAC, and Phase 2 regressions
+`av` is required by the live-media tests. Pytest configuration lives in
+`pyproject.toml` (`testpaths = ["tests"]`, `pythonpath = [".", "backend"]`).
 
-### Mocking
-Tests use mocked LLM responses to run without API keys.
+### Run tests
+
+```bash
+# Full suite
+python -m pytest
+
+# Verbose full suite
+python -m pytest -v
+
+# Specific test files
+python -m pytest tests/test_core.py -v
+python -m pytest tests/test_user_management.py tests/test_analytics_regression.py -v
+
+# Select by keyword
+python -m pytest -k "auth or analytics or provider" -v
+
+# Stop on first failure
+python -m pytest -x
+```
+
+The full suite is UI-heavy and can take several minutes. Use targeted files or
+`-k` during development.
+
+### Coverage
+
+```bash
+python -m pytest --cov=backend --cov-report=term-missing
+python -m pytest --cov=backend --cov-report=html
+```
+
+### Test structure
+
+- `tests/test_core.py`: models, helpers, settings, RAG, provider fallback, validation, and persistence
+- `tests/test_user_management.py`: authentication, admin workflows, RBAC, password/reset security
+- `tests/test_user_dashboard.py`: dashboard data, owner scoping, page wiring, and `AppTest` renders
+- `tests/test_analytics_regression.py`: analytics calculations, filters, empty states, and owner isolation
+- `tests/test_career_features.py`: resume/JD processing, validation, and PDF reports
+- `tests/test_job_interviews.py`, `tests/test_interview_practice.py`, `tests/test_roadmap_generation.py`: interview and roadmap workflows
+- `tests/test_live_*`, `tests/test_stage3_*`, `tests/test_stage4*`: live calls, WebRTC, recording lifecycle, media integrity, and concurrency
+- `tests/test_secret_hygiene.py`: `.env.example`, `.gitignore`, and secret-handling guards
+
+### Isolation model
+
+- SQLite databases, vector stores, and media paths are redirected to `tmp_path`.
+- Environment variables and settings are changed with `pytest.monkeypatch`.
+- LLM providers are replaced with scripted or fake implementations.
+- Streamlit pages are rendered through `streamlit.testing.v1.AppTest`.
+
+Do not put real API keys in `.env` when running tests. Use `.env.example` as the
+template and keep real credentials in the gitignored `.env` file only.
+
+### Quality checks
+
+```bash
+python -m ruff check .
+python -m black --check .
+python -m mypy backend frontend app.py
+```
 
 ## Troubleshooting
 
