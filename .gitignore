@@ -15,6 +15,9 @@ venv/
 env/
 ENV/
 
+# Keep tests local; do not publish to GitHub
+tests/
+
 # Environment variables
 .env
 .env.local
