@@ -1,20 +1,22 @@
-# AI Interview Assistant
+# AI Jobs Interview Assistant
 
 ## Overview
 
-AI Interview Assistant is a comprehensive, production-quality application designed to help students and job seekers prepare for real-world job interviews. Built as a Final Year University Project, it demonstrates expertise in Generative AI, LLMs, RAG, Vector Databases, Embeddings, Prompt Engineering, Speech-to-Text, and modern software engineering practices.
+AI Jobs Interview Assistant is a comprehensive, production-quality application designed to help students and job seekers prepare for real-world job interviews. Built as a Final Year University Project, it demonstrates expertise in Generative AI, LLMs, RAG, Vector Databases, Embeddings, Prompt Engineering, Speech-to-Text, and modern software engineering practices.
 
 The application analyzes resumes, matches them against job descriptions, generates personalized interview questions, conducts mock interviews with AI evaluation, and provides detailed performance reports with improvement plans.
 
 ## Features
 
 ### 📄 Resume Analysis
+
 - Upload PDF, DOCX, or TXT resumes
 - Extract structured information: education, experience, skills, projects, certifications
 - AI-powered scoring across 6 categories (Technical Skills, Experience, Projects, Education, Certifications, Structure)
 - Contact information extraction (email, phone, LinkedIn, GitHub, portfolio)
 
 ### 🎯 Job Description Matching
+
 - Paste or upload job descriptions
 - Extract requirements: skills, experience, education, responsibilities, keywords
 - Compare resume vs job description with detailed match scores
@@ -22,24 +24,28 @@ The application analyzes resumes, matches them against job descriptions, generat
 - Actionable recommendations for improvement
 
 ### 🤖 Interview Question Generation
+
 - 7 question categories: Technical, HR, Behavioral, Situational, Project-based, Resume-based, Job-specific
 - 3 difficulty levels: Easy, Medium, Hard
 - Personalized questions based on resume, job description, and skill gaps
 - Dynamic follow-up question generation based on answers
 
 ### 🎤 Mock Interview Engine
+
 - Interactive interview sessions with real-time AI evaluation
 - Text and voice answer modes
 - Voice answers transcribed using local Whisper (no paid APIs)
 - Immediate feedback after each answer
 
 ### 📊 Answer Evaluation
+
 - 5-dimensional scoring (0-10): Technical Accuracy, Relevance, Communication, Confidence, Completeness
 - Detailed feedback: strengths, weaknesses, missing points, incorrect points
 - Suggested better answers
 - Communication and technical feedback
 
 ### 📈 Interview Reports
+
 - Overall, Technical, Communication, HR, and Problem-Solving scores
 - Strengths and weaknesses analysis
 - Frequently missed concepts
@@ -47,29 +53,33 @@ The application analyzes resumes, matches them against job descriptions, generat
 - 7-day and 30-day improvement plans
 
 ### 📊 Dashboard & Progress Tracking
+
 - Resume score, job match score, latest interview score
 - Interview history with score trends derived from persisted sessions
 - Category-level performance and focus areas
 - Progress charts over time
 
 ### 🔐 Accounts & Workspaces
+
 - Sign-up, email login, role-based admin, and rate-limited authentication
 - Stable workspace tokens with owner-scoped queries for all saved data
 - Per-user preferences persisted in the database
 
 ### 📚 Knowledge Base (RAG)
+
 - Per-workspace document upload, chunking, embeddings, and FAISS indexing
 - Cited, grounded answers and question generation from your documents
 - Atomic index persistence with embedding-model invalidation
 
 ### 📄 Report Export
+
 - Download interview reports as JSON or PDF
 - PDF files are generated with ReportLab and persisted per workspace
 
 ## Architecture
 
-```
-ai-interview-assistant/
+```text
+ai-jobs-interview-assistant/
 ├── app.py                       # Streamlit entry point and navigation registry
 ├── backend/
 │   ├── config/settings.py       # Environment-driven settings
@@ -82,14 +92,14 @@ ai-interview-assistant/
 │   ├── admin/                   # Admin-only pages
 │   └── user/                    # Live user pages plus legacy wrappers/modules
 ├── docs/                        # Provider and fallback documentation
-├── reports/                     # Phase audit and verification reports
-├── tests/                       # Core, dashboard, and user-management tests
 ├── data/                        # Gitignored database, uploads, vectors, cache
 ├── .streamlit/                  # Theme and server configuration
 ├── pyproject.toml               # Tooling and canonical optional dev dependencies
 ├── requirements.txt             # Runtime dependency list
 ├── .env.example                 # Secrets-free environment variable template
-└── README.md                    # This file
+├── README.md                    # This file
+├── reports/                     # Local phase audit and verification reports (gitignored)
+└── tests/                       # Local test suite (gitignored; not published)
 ```
 
 ## Tech Stack
@@ -115,6 +125,7 @@ See the Architecture section above for the complete directory structure.
 ## Installation
 
 ### Prerequisites
+
 - Python 3.11+
 - Git
 - (Optional) FFmpeg for audio processing
@@ -124,11 +135,11 @@ See the Architecture section above for the complete directory structure.
 ```powershell
 # Clone the repository
 git clone <your-repo-url>
-cd ai-interview-assistant
+cd ai-jobs-interview-assistant
 
 # Create virtual environment
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 
 # Install runtime dependencies
 pip install -r requirements.txt
@@ -143,10 +154,25 @@ Copy-Item .env.example .env
 notepad .env
 
 # Run the application
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 ### Using uv (faster)
+
+Windows PowerShell:
+
+```powershell
+# Install uv if not available
+pip install uv
+
+# Create environment and install
+uv venv
+.\.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+uv pip install pytest pytest-cov ruff black mypy av
+```
+
+Linux/macOS:
 
 ```bash
 # Install uv if not available
@@ -154,7 +180,7 @@ pip install uv
 
 # Create environment and install
 uv venv
-.venv\Scripts\Activate.ps1
+source .venv/bin/activate
 uv pip install -r requirements.txt
 uv pip install pytest pytest-cov ruff black mypy av
 ```
@@ -163,14 +189,14 @@ uv pip install pytest pytest-cov ruff black mypy av
 
 ```bash
 git clone <your-repo-url>
-cd ai-interview-assistant
+cd ai-jobs-interview-assistant
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install pytest pytest-cov ruff black mypy av
 cp .env.example .env
 # Edit .env with your API keys
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 ## Python Version
@@ -182,17 +208,27 @@ streamlit run app.py
 
 Always use a virtual environment to avoid dependency conflicts:
 
+Create the environment:
+
 ```bash
-# Create
 python -m venv .venv
+```
 
-# Activate (Windows)
-.venv\Scripts\Activate.ps1
+Activate it in Windows PowerShell:
 
-# Activate (Linux/macOS)
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Activate it in Linux/macOS:
+
+```bash
 source .venv/bin/activate
+```
 
-# Deactivate
+Deactivate it:
+
+```bash
 deactivate
 ```
 
@@ -238,7 +274,8 @@ remains the secondary provider and `GOOGLE_API_KEY` is a backward-compatible ali
 `GEMINI_API_KEY`.
 
 ### Groq API Setup (primary provider)
-1. Go to https://console.groq.com/keys
+
+1. Go to the [Groq Console](https://console.groq.com/keys).
 2. Create a new API key.
 3. Add to `.env` as `GROQ_API_KEY`.
 4. Optionally set `GROQ_MODEL` to another model available to your key.
@@ -246,41 +283,49 @@ remains the secondary provider and `GOOGLE_API_KEY` is a backward-compatible ali
 6. Free tier and quota limits depend on the Groq account.
 
 ### Gemini API Setup (secondary provider)
-1. Go to https://aistudio.google.com/apikey
+
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey).
 2. Create a new API key and enable the Generative Language API.
 3. Add to `.env` as `GEMINI_API_KEY`.
 4. Optionally set `GEMINI_MODEL` to another model available to your key.
-
-### Groq API Setup (optional fallback)
-1. Go to https://console.groq.com/keys
-2. Create a new API key
-3. Add to `.env` as `GROQ_API_KEY`
-4. Free tier: 14,400 requests/day, 6,000 tokens/minute
 
 ## Running the Application
 
 Use the project virtual environment interpreter so Streamlit and project dependencies (including `streamlit-webrtc`) come from the same environment.
 
+### Windows PowerShell
+
+From the project root:
+
 ```powershell
-# Recommended (Windows, from project root)
-.env\Scripts\python.exe -m streamlit run app.py
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
+Optional custom port:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
+```
+
+### Linux/macOS
+
+From the project root:
+
 ```bash
-# Activate virtual environment
-.venv\Scripts\Activate.ps1  # Windows
-# source .venv/bin/activate  # Linux/macOS
+source .venv/bin/activate
+python -m streamlit run app.py
+```
 
-# Run Streamlit app
-streamlit run app.py
+Optional custom port:
 
-# Or specify port
-streamlit run app.py --server.port 8501
+```bash
+python -m streamlit run app.py --server.port 8501
 ```
 
 > **Note:** A global `streamlit` or `python` executable may point to a different interpreter (for example Anaconda), which can cause missing-package errors such as `streamlit-webrtc` being unavailable even when it is installed in the project venv.
 
-The app will open at `http://localhost:8501`
+The app will open at [http://localhost:8501](http://localhost:8501).
+
 
 ## Example Workflow
 
@@ -387,36 +432,44 @@ python -m mypy backend frontend app.py
 ### Common Issues
 
 **1. "ModuleNotFoundError: No module named 'faster_whisper'"**
+
 ```bash
 pip install faster-whisper
 ```
 
 **2. "CUDA out of memory" or Whisper slow**
+
 - Use smaller model: `WHISPER_MODEL=tiny` or `base`
 - Ensure `WHISPER_DEVICE=cpu` if no GPU
 
 **3. "Groq API rate limit exceeded"**
+
 - Wait and retry (automatic retry with backoff implemented)
-- Check quota at https://console.groq.com/
+- Check quota at the [Groq Console](https://console.groq.com/).
 
 **4. "FAISS index not found"**
+
 - First run creates the index automatically
 - Check `data/vector_store/` permissions
 
 **5. "Database locked"**
+
 - Close other instances of the app
 - Check file permissions on `data/interview_assistant.db`
 
 **6. "File too large"**
+
 - Increase `MAX_FILE_SIZE_MB` in `.env`
 - Compress PDF before upload
 
 **7. Audio recording not working in browser**
+
 - Use HTTPS or localhost (browser security)
 - Allow microphone permissions
 - Try text mode as alternative
 
 ### Performance Tips
+
 - Use `WHISPER_MODEL=tiny` for fastest transcription
 - Reduce `CHUNK_SIZE` for faster embedding
 
@@ -442,15 +495,16 @@ MIT License - See LICENSE file for details.
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests: `pytest tests/ -v`
-5. Run lint: `ruff check . && black --check .`
-6. Format code: `black . && ruff check . --fix`
-7. Type check: `mypy .`
+4. Run tests: `python -m pytest -v`
+5. Run lint: `python -m ruff check .`
+6. Format code: `python -m black . && python -m ruff check . --fix`
+7. Type check: `python -m mypy backend frontend app.py`
 8. Submit a pull request
 
 ## Final Year Project Presentation Points
 
 ### Technical Highlights
+
 1. **Multi-provider LLM Architecture** - Abstracted LLM service supporting Groq, Gemini, and Ollama with fallback
 2. **RAG Pipeline** - Complete document processing, embedding, vector storage, and retrieval
 3. **Structured Output** - Pydantic models for all LLM responses with validation
@@ -459,6 +513,7 @@ MIT License - See LICENSE file for details.
 6. **Progress Tracking** - SQLite persistence with historical analytics
 
 ### AI/ML Concepts Demonstrated
+
 - Generative AI with LLMs
 - Retrieval-Augmented Generation (RAG)
 - Vector embeddings and similarity search
@@ -467,6 +522,7 @@ MIT License - See LICENSE file for details.
 - Multi-modal interaction (text + voice)
 
 ### Software Engineering Practices
+
 - Modular, maintainable architecture
 - Configuration management with environment variables
 - Error handling with retry logic
@@ -478,7 +534,7 @@ MIT License - See LICENSE file for details.
 ## Viva Questions & Answers
 
 **Q: Why did you choose Groq as the primary LLM provider?**
-A: Groq offers free tier with high throughput (14,400 req/day), low latency via LPU inference, and OpenAI-compatible API making it easy to swap providers.
+A: Groq offers low-latency inference and an OpenAI-compatible API, making it easy to swap providers. Quotas and model availability depend on the selected account.
 
 **Q: How does the RAG pipeline work?**
 A: Documents → Load → Clean → Split (1000 chars, 200 overlap) → Embed (all-MiniLM-L6-v2) → Store in FAISS → Retrieve top-k → Inject into LLM context.
@@ -503,7 +559,7 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 
 ## Resume/CV Project Description
 
-**AI Interview Assistant** | Final Year Project | Python, Streamlit, LLMs, RAG, FAISS, Whisper
+**AI Jobs Interview Assistant** | Final Year Project | Python, Streamlit, LLMs, RAG, FAISS, Whisper
 
 - Built a full-stack AI-powered interview preparation platform using Groq, Gemini, and Ollama LLMs, local embeddings (Sentence Transformers), FAISS vector database, and Faster-Whisper for speech-to-text
 - Implemented modular RAG pipeline: document loading (PDF/DOCX), text splitting, embedding generation, vector storage, and contextual retrieval
@@ -516,11 +572,12 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 
 ## GitHub Project Description
 
-🤖 **AI Interview Assistant** - An intelligent interview preparation platform that helps students and job seekers practice for real interviews using Generative AI.
+🤖 **AI Jobs Interview Assistant** - An intelligent interview preparation platform that helps students and job seekers practice for real interviews using Generative AI.
 
 **Key Features:**
+
 - 📄 Resume analysis with AI scoring
-- 🎯 Job description matching & gap analysis  
+- 🎯 Job description matching & gap analysis
 - 🤖 Personalized interview questions (7 categories, 3 difficulties)
 - 🎤 Mock interviews with text/voice input
 - 📊 Detailed evaluation & improvement plans
@@ -528,6 +585,4 @@ A: LLM generates daily actionable items based on interview weaknesses, with spec
 
 **Tech Stack:** Python, Streamlit, Groq/Gemini/Ollama LLMs, Sentence Transformers, FAISS, Faster-Whisper, SQLite, Pydantic
 
-**Free & Open Source:** Runs entirely on free APIs and local models - no paid services required.#   A I - J o b - I n t e r v i e w - A s s i s t a n t 
- 
- 
+**Free & open source:** The code uses free-tier-capable provider options and local models. Provider quotas and model availability depend on the selected account and service.
