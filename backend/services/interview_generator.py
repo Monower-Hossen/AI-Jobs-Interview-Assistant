@@ -48,6 +48,36 @@ class InterviewQuestion(BaseModel):
 
 _VALID_CATEGORIES = {c.value for c in QuestionCategory}
 _VALID_DIFFICULTIES = {d.value for d in Difficulty}
+_VALID_REQUESTED_DIFFICULTIES = _VALID_DIFFICULTIES | {"mixed"}
+
+_DIFFICULTY_ALIASES = {
+    "beginner": "easy",
+    "beginner_level": "easy",
+    "beginner level": "easy",
+    "intermediate": "medium",
+    "advanced": "hard",
+    "mixed": "mixed",
+}
+
+_QUESTION_TYPE_CATEGORIES: dict[str, tuple[QuestionCategory, ...]] = {
+    "technical": (QuestionCategory.TECHNICAL, QuestionCategory.PROJECT_BASED),
+    "hr_and_behavioral": (QuestionCategory.HR, QuestionCategory.BEHAVIORAL),
+    "situational": (QuestionCategory.SITUATIONAL, QuestionCategory.BEHAVIORAL),
+    "problem_solving": (
+        QuestionCategory.SITUATIONAL,
+        QuestionCategory.PROJECT_BASED,
+        QuestionCategory.TECHNICAL,
+    ),
+    "conceptual": (QuestionCategory.TECHNICAL, QuestionCategory.JOB_SPECIFIC),
+    "practical": (QuestionCategory.PROJECT_BASED, QuestionCategory.TECHNICAL),
+    "general_interview": (
+        QuestionCategory.HR,
+        QuestionCategory.BEHAVIORAL,
+        QuestionCategory.SITUATIONAL,
+        QuestionCategory.JOB_SPECIFIC,
+    ),
+    "mixed": tuple(QuestionCategory),
+}
 
 
 def _normalize_label(value: Any, default: str) -> str:
@@ -143,6 +173,20 @@ def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def _bounded_context(value: Any, limit: int = 300) -> str:
+    return _clean_text(value)[:limit] or "None specified"
+
+
+def _normalize_requested_difficulty(value: Any) -> str:
+    label = _normalize_label(value, "medium")
+    return _DIFFICULTY_ALIASES.get(label, label)
+
+
+def _categories_for_question_type(value: Any) -> list[QuestionCategory]:
+    key = _normalize_label(value, "")
+    return list(_QUESTION_TYPE_CATEGORIES.get(key, tuple(QuestionCategory)))
+
+
 def _category_distribution(questions: list[InterviewQuestion]) -> dict[str, int]:
     distribution: dict[str, int] = {}
     for question in questions:
@@ -198,8 +242,21 @@ def _validate_generated_questions(result: QuestionSet, requested_count: int) -> 
     )
 
 
-QUESTION_GENERATION_PROMPT = """You are an expert interview coach. Generate personalized interview questions based on the candidate's resume, target job, and skill gaps.
+QUESTION_GENERATION_PROMPT = """You are an expert interview coach. Generate original interview questions for any industry, profession, education path, or career stage.
 
+UNIVERSAL QUESTION CONFIGURATION:
+- Industry or sector: {industry}
+- Target job role or profession: {target_role}
+- Topic or subject: {topic}
+- Question type: {question_type}
+- Experience level: {experience_level}
+- Difficulty: {difficulty}
+- Total questions needed: {total_questions}
+- Categories to include: {categories}
+- Interview type: {interview_type}
+- Focus areas: {focus_areas}
+
+OPTIONAL CANDIDATE CONTEXT (use only when it is populated and relevant; never let it override the configuration above):
 CANDIDATE RESUME:
 {resume_json}
 
@@ -209,35 +266,33 @@ TARGET JOB:
 MATCH ANALYSIS:
 {match_json}
 
-CONFIGURATION:
-- Total questions needed: {total_questions}
-- Difficulty: {difficulty}
-- Categories to include: {categories}
-- Focus areas: {focus_areas}
-- Interview type: {interview_type}
-
 KNOWLEDGE BASE CONTEXT (use it when relevant):
 {knowledge_context}
 
-Generate exactly {total_questions} highly personalized interview questions with unique, non-empty question text. Distribute across categories:
-- Technical: Core technical skills from job requirements
-- HR: Cultural fit, motivation, career goals
+Generate exactly {total_questions} highly relevant interview questions with unique, non-empty question text.
+Use the universal configuration as the primary source of truth. Do not assume that every profession is technical or AI-related.
+When no role is specified, ask role-neutral questions that still match the industry, topic, and experience level.
+When difficulty is "mixed", vary the questions across easy, medium, and hard; every question's "difficulty" field must still be easy, medium, or hard.
+Test domain-specific competencies appropriate to the profession, such as clinical judgment, classroom management, financial reporting, sales pipeline, design critique, legal reasoning, or technical problem solving.
+Distribute questions across these allowed categories: {categories}.
+- Technical: Core skills, tools, and applied problem solving
+- HR: Motivation, culture fit, career goals
 - Behavioral: Past behavior predicting future performance (STAR method)
-- Situational: Hypothetical scenarios relevant to the role
-- Project-based: Deep dive into candidate's projects
-- Resume-based: Clarification and deep-dive on resume claims
-- Job-specific: Questions tailored to this specific role
+- Situational: Hypothetical scenarios relevant to the industry and role
+- Project-based: Deep dives into relevant work samples or case studies
+- Resume-based: Clarification of candidate claims when resume context exists
+- Job-specific: Questions tailored to the named role when provided
 
 Each question must have:
 1. question_number: Sequential number (1 to {total_questions})
-2. category: One of the 7 categories above (lowercase: technical, hr, behavioral, situational, project_based, resume_based, job_specific)
+2. category: One of the allowed categories listed above (lowercase: technical, hr, behavioral, situational, project_based, resume_based, job_specific)
 3. difficulty: easy, medium, or hard
-4. question_text: The actual question (personalized, not generic)
+4. question_text: The actual question, specific to the configured industry, role, topic, question type, and experience level
 5. expected_key_points: 3-5 key points a strong answer should cover
 6. follow_up_hints: 2-3 hints for follow-up questions based on answer
 
 Avoid generic questions like "Tell me about yourself" unless specifically needed.
-Make questions specific to the candidate's background and the target role.
+DO NOT mention that the resume, job, or knowledge base is empty or missing.
 
 Return ONLY valid JSON matching this exact structure:
 {{
@@ -246,32 +301,45 @@ Return ONLY valid JSON matching this exact structure:
       "question_number": 1,
       "category": "technical",
       "difficulty": "medium",
-      "question_text": "Your personalized question here",
+      "question_text": "Your specific question here",
       "expected_key_points": ["point 1", "point 2", "point 3"],
       "follow_up_hints": ["hint 1", "hint 2"]
     }}
   ],
   "total_count": {total_questions},
-  "category_distribution": {{"technical": 3, "hr": 2, "behavioral": 2, "situational": 1, "project_based": 1, "resume_based": 1, "job_specific": 1}}
+  "category_distribution": {{"technical": 1}}
 }}
 
-The category_distribution must sum to total_count ({total_questions}). Use lowercase category names."""
+The category_distribution must use lowercase keys, contain only allowed categories, and sum to total_count ({total_questions})."""
 
 
-RETRY_QUESTION_PROMPT = """Generate exactly {total_questions} interview questions. Every question must be unique and non-empty. Return ONLY a single valid JSON object with this EXACT structure:
+RETRY_QUESTION_PROMPT = """Generate exactly {total_questions} interview questions. Every question must be unique, non-empty, and specific to the configuration below. Return ONLY a single valid JSON object with this EXACT structure:
 
-{
+CONFIGURATION:
+- Industry or sector: {industry}
+- Target job role or profession: {target_role}
+- Topic or subject: {topic}
+- Question type: {question_type}
+- Experience level: {experience_level}
+- Difficulty: {difficulty}
+- Categories to include: {categories}
+- Interview type: {interview_type}
+- Focus areas: {focus_areas}
+
+{{
   "questions": [
-    {"question_number": 1, "category": "technical", "difficulty": "medium", "question_text": "Your question here", "expected_key_points": ["point 1", "point 2"], "follow_up_hints": ["hint 1"]},
-    {"question_number": 2, "category": "hr", "difficulty": "medium", "question_text": "Your question here", "expected_key_points": ["point 1", "point 2"], "follow_up_hints": ["hint 1"]}
+    {{"question_number": 1, "category": "technical", "difficulty": "medium", "question_text": "Your question here", "expected_key_points": ["point 1", "point 2"], "follow_up_hints": ["hint 1"]}},
+    {{"question_number": 2, "category": "hr", "difficulty": "medium", "question_text": "Your question here", "expected_key_points": ["point 1", "point 2"], "follow_up_hints": ["hint 1"]}}
   ],
   "total_count": {total_questions},
-  "category_distribution": {"technical": 1, "hr": 1}
-}
+  "category_distribution": {{"technical": 1, "hr": 1}}
+}}
 
 CRITICAL RULES:
 - "questions" MUST be an array of exactly {total_questions} OBJECTS (not strings)
 - Do not repeat or paraphrase a question; every question_text must be unique and non-empty
+- Tailor every question to the industry, role, topic, question type, and experience level above; do not assume a technical or AI profession
+- When difficulty is "mixed", vary across easy, medium, and hard
 - Each question object MUST have: question_number (int), category (lowercase), difficulty (easy/medium/hard), question_text (string), expected_key_points (array of strings), follow_up_hints (array of strings)
 - "category_distribution" MUST use lowercase keys and sum to total_count
 - NO markdown, NO explanation, NO ```json fences
@@ -293,21 +361,23 @@ class InterviewGenerator:
         focus_areas: list[str] | None = None,
         knowledge_context: str = "",
         interview_type: str = "Full Interview",
+        *,
+        industry: str = "",
+        target_role: str = "",
+        topic: str = "",
+        question_type: str = "",
+        experience_level: str = "",
     ) -> QuestionSet:
 
         if not isinstance(total_questions, int) or not 1 <= total_questions <= _MAX_TOTAL_QUESTIONS:
             raise ValueError(f"Total questions must be between 1 and {_MAX_TOTAL_QUESTIONS}.")
 
+        requested_difficulty = _normalize_requested_difficulty(difficulty)
+        if requested_difficulty not in _VALID_REQUESTED_DIFFICULTIES:
+            raise ValueError("Difficulty must be easy, medium, hard, or mixed.")
+
         if categories is None:
-            categories = [
-                QuestionCategory.TECHNICAL,
-                QuestionCategory.HR,
-                QuestionCategory.BEHAVIORAL,
-                QuestionCategory.SITUATIONAL,
-                QuestionCategory.PROJECT_BASED,
-                QuestionCategory.RESUME_BASED,
-                QuestionCategory.JOB_SPECIFIC,
-            ]
+            categories = _categories_for_question_type(question_type)
 
         category_names = [c.value for c in categories]
         focus = list(focus_areas or [])
@@ -318,28 +388,33 @@ class InterviewGenerator:
 
         resume_limit = get_resume_input_limit()
         job_limit = get_job_input_limit()
+        universality = {
+            "industry": _bounded_context(industry),
+            "target_role": _bounded_context(target_role),
+            "topic": _bounded_context(topic),
+            "question_type": _bounded_context(question_type, 120),
+            "experience_level": _bounded_context(experience_level, 120),
+        }
+        common_prompt_values = {
+            **universality,
+            "total_questions": total_questions,
+            "difficulty": requested_difficulty,
+            "categories": ", ".join(category_names),
+            "focus_areas": ", ".join(focus) if focus else "None specified",
+            "interview_type": _bounded_context(interview_type, 120),
+        }
         prompt = QUESTION_GENERATION_PROMPT.format(
+            **common_prompt_values,
             resume_json=truncate_text(resume.model_dump_json(indent=2), resume_limit),
             job_json=truncate_text(job.model_dump_json(indent=2), job_limit),
             match_json=truncate_text(match.model_dump_json(indent=2), job_limit),
-            total_questions=total_questions,
-            difficulty=difficulty,
-            categories=", ".join(category_names),
-            focus_areas=", ".join(focus) if focus else "None specified",
             knowledge_context=knowledge_context[:4000] or "None provided",
-            interview_type=interview_type,
         )
-        retry_prompt = RETRY_QUESTION_PROMPT.replace(
-            "{total_questions}", str(total_questions)
-        )
+        retry_prompt = RETRY_QUESTION_PROMPT.format(**common_prompt_values)
         retry_prompt += (
-            "\n\nCONFIGURATION:\n"
-            f"- Difficulty: {difficulty}\n"
-            f"- Categories: {', '.join(category_names)}\n"
-            f"- Focus areas: {', '.join(focus) if focus else 'None specified'}\n"
-            f"- Interview type: {interview_type}\n"
-            f"- Knowledge context: {knowledge_context[:2000] or 'None provided'}\n"
-            "\n\nRESUME:\n"
+            "\n\nKNOWLEDGE CONTEXT:\n"
+            + knowledge_context[:2000]
+            + "\n\nRESUME:\n"
             + truncate_text(resume.model_dump_json(indent=2), resume_limit)
             + "\n\nJOB:\n"
             + truncate_text(job.model_dump_json(indent=2), job_limit)
@@ -430,6 +505,13 @@ def generate_interview_questions(
     categories: list[QuestionCategory] | None = None,
     knowledge_context: str = "",
     interview_type: str = "Full Interview",
+    *,
+    focus_areas: list[str] | None = None,
+    industry: str = "",
+    target_role: str = "",
+    topic: str = "",
+    question_type: str = "",
+    experience_level: str = "",
 ) -> QuestionSet:
     generator = InterviewGenerator()
     return generator.generate(
@@ -439,6 +521,12 @@ def generate_interview_questions(
         total_questions,
         difficulty,
         categories,
+        focus_areas,
         knowledge_context=knowledge_context,
         interview_type=interview_type,
+        industry=industry,
+        target_role=target_role,
+        topic=topic,
+        question_type=question_type,
+        experience_level=experience_level,
     )
