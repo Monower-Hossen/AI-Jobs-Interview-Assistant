@@ -4,7 +4,7 @@ from services.auth_service import list_users
 from services.live_interview_coordination_service import create_invitation, list_invitations
 
 from frontend.shared.components import empty_state, error_state, page_header, section
-from frontend.shared.live_invitation_ui import render_room
+from frontend.shared.live_invitation_ui import render_invitation_refresh, render_room
 
 
 def _candidate_options(admin_user_id: int) -> dict[str, int]:
@@ -82,6 +82,7 @@ def show_admin_live_interviews() -> None:
         ":material/videocam:",
     )
     _render_create_form(admin_user_id, session_token)
+    render_invitation_refresh(admin_user_id, session_token)
 
     section("Existing invitations", ":material/list:")
     try:
@@ -101,7 +102,7 @@ def show_admin_live_interviews() -> None:
         return
     changed = False
     for room in rooms:
-        if render_room(room):
+        if render_room(room, allow_delete=True):
             changed = True
     if changed:
         st.rerun()

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, cast
 
+import pandas as pd
 import streamlit as st
 from config.settings import settings
 from services.auth_service import (
@@ -12,6 +14,8 @@ from services.auth_service import (
     admin_create_user,
     admin_reset_password,
     delete_user,
+    get_admin_user_profile,
+    get_user_activity_for_admin,
     list_users,
     require_admin,
     set_user_status,
@@ -21,6 +25,7 @@ from services.auth_service import (
 from frontend.shared.auth_ui import clear_credential_state
 from frontend.shared.components import (
     data_table,
+    empty_state,
     error_state,
     page_header,
     section,
@@ -60,22 +65,122 @@ def _status_badge(status: str) -> None:
     )
 
 
+def _format_datetime(value: datetime | None, missing: str = "N/A") -> str:
+    return value.strftime("%Y-%m-%d %H:%M") if value else missing
+
+
+def _format_score(value: float | None) -> str:
+    return "—" if value is None else f"{value:.1f}"
+
+
+def _detail(label: str, value: str) -> None:
+    st.markdown(f"**{label}**")
+    st.caption(value or "Not provided")
+
+
+@st.dialog("View user profile", width="large")
+def _view_profile_dialog(user_id: int, actor_admin_id: int) -> None:
+    try:
+        profile = get_admin_user_profile(user_id, actor_admin_id=actor_admin_id)
+    except AuthError as exc:
+        error_state("Could not load user profile.", str(exc))
+        return
+    account = profile.account
+    activity = profile.activity
+    st.caption(f"User ID: {account.id}")
+
+    with st.container(border=True):
+        st.markdown("#### Profile details")
+        left, right = st.columns(2)
+        with left:
+            _detail("Full Name", account.full_name)
+            _detail("Email Address", account.email)
+            _detail("Username", account.username or "")
+            _detail("Phone Number", account.phone_number or "")
+        with right:
+            _detail("Account Role", account.role.title())
+            st.markdown("**Account Status**")
+            _status_badge(account.account_status)
+            _detail("Registration Date", _format_datetime(account.created_at))
+            _detail("Last Login", _format_datetime(account.last_login, "Never"))
+        st.markdown("**Profile Information**")
+        st.caption(account.additional_profile_info or "No profile information provided.")
+
+    with st.container(border=True):
+        st.markdown("#### Interview summary")
+        metrics = st.columns(2)
+        metrics[0].metric("Total Interviews", activity.total_interviews)
+        metrics[1].metric("Average Interview Score", _format_score(activity.average_score))
+
+
+@st.dialog("Edit user", width="large")
+def _edit_user_dialog(user, admin) -> None:
+    status = _status_for_row(user)
+    is_self = user.id == getattr(admin, "id", None)
+    st.caption(f"Editing {user.full_name} ({user.email})")
+    with st.container(border=True):
+        with st.form(f"edit_user_{user.id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                full_name = st.text_input("Full Name", value=user.full_name or "")
+                email = st.text_input("Email Address", value=user.email or "")
+                username = st.text_input("Username", value=user.username or "")
+            with col2:
+                phone_number = st.text_input("Phone Number", value=user.phone_number or "")
+                status_value = st.selectbox(
+                    "Account Status",
+                    ["active", "inactive", "suspended"],
+                    index=(
+                        ["active", "inactive", "suspended"].index(status)
+                        if status in ["active", "inactive", "suspended"]
+                        else 0
+                    ),
+                    disabled=is_self,
+                )
+                additional_profile_info = st.text_area(
+                    "Additional Profile Information", value=user.additional_profile_info or ""
+                )
+            if st.form_submit_button("Save Changes", type="primary", width="stretch"):
+                try:
+                    update_user_account(
+                        user.id,
+                        actor_admin_id=admin.id,
+                        full_name=full_name,
+                        email=email,
+                        username=username,
+                        phone_number=phone_number,
+                        account_status=status_value if not is_self else None,
+                        additional_profile_info=additional_profile_info,
+                    )
+                except AuthError as exc:
+                    error_state("Could not update user.", str(exc))
+                    return
+                except Exception as exc:
+                    error_state("Could not update user.", str(exc))
+                    return
+                success_toast("User updated.")
+                st.rerun()
+        if is_self:
+            st.caption("Your own account status cannot be changed here.")
+
+
 @st.dialog("Delete user account", width="small")
 def _delete_user_dialog(user, actor_admin_id: int) -> None:
     st.warning(
         f"Permanently delete **{user.full_name}** ({user.email})? This cannot be undone.",
         icon=":material/warning:",
     )
-    st.caption("The account, its workspace sessions, and its activity log will be removed.")
+    st.caption(
+        "The account and its sign-in sessions are removed. Interviews, reports, recordings, "
+        "and audit history are retained; live invitations are removed."
+    )
     confirmed = st.checkbox(
         "I understand this action is permanent", key=f"confirm_delete_ack_{user.id}"
     )
     cancel_col, confirm_col = st.columns(2)
     if cancel_col.button("Cancel", width="stretch"):
         st.rerun()
-    if confirm_col.button(
-        "Delete account", type="primary", disabled=not confirmed, width="stretch"
-    ):
+    if confirm_col.button("Delete User", type="primary", disabled=not confirmed, width="stretch"):
         try:
             delete_user(user.id, actor_admin_id=actor_admin_id)
         except AuthError as exc:
@@ -90,6 +195,11 @@ def show_admin_users() -> None:
     page_header("User Management", "Create, update, and manage user accounts", ":material/group:")
 
     users = list_users(actor_admin_id=admin.id)
+    active_admin_count = sum(
+        1
+        for user in users
+        if user.role == "admin" and user.account_status == "active" and user.is_active
+    )
     _render_create_form(admin)
     _render_users_table(users)
 
@@ -100,7 +210,7 @@ def show_admin_users() -> None:
     selected = _select_user(users)
     if selected is None:
         return
-    _render_user_actions(selected, admin)
+    _render_user_actions(selected, admin, active_admin_count)
 
 
 def _render_create_form(admin) -> None:
@@ -117,9 +227,7 @@ def _render_create_form(admin) -> None:
                 username = st.text_input("Username *", placeholder="jane.doe")
                 phone_number = st.text_input("Phone Number", placeholder="Optional")
             with col2:
-                password = st.text_input(
-                    "Password *", type="password", key="admin_user_password"
-                )
+                password = st.text_input("Password *", type="password", key="admin_user_password")
                 confirm_password = st.text_input(
                     "Confirm Password *", type="password", key="admin_user_confirm_password"
                 )
@@ -206,10 +314,8 @@ def _render_users_table(users) -> None:
                 "Username": user.username or "",
                 "Status": _status_for_row(user).title(),
                 "Role": user.role,
-                "Created": user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else "",
-                "Last Login": (
-                    user.last_login.strftime("%Y-%m-%d %H:%M") if user.last_login else "Never"
-                ),
+                "Created": _format_datetime(user.created_at),
+                "Last Login": _format_datetime(user.last_login, "Never"),
                 "Phone": user.phone_number or "",
             }
             for user in filtered
@@ -220,7 +326,7 @@ def _render_users_table(users) -> None:
 
 def _select_user(users):
     options = {
-        f"{u.full_name} ({u.email}, @{u.username or 'no-username'}, { _status_for_row(u).title() }) [id {u.id}]": u.id
+        f"{u.full_name} ({u.email}, @{u.username or 'no-username'}, {_status_for_row(u).title()}) [id {u.id}]": u.id
         for u in users
     }
     selected_label = st.selectbox(
@@ -230,61 +336,45 @@ def _select_user(users):
     return next((u for u in users if u.id == selected_id), None)
 
 
-def _render_user_actions(user, admin) -> None:
+def _render_user_actions(user, admin, active_admin_count: int) -> None:
     section("Manage Selected User", ":material/manage_accounts:")
     status = _status_for_row(user)
     is_self = user.id == getattr(admin, "id", None)
+    is_last_active_admin = user.role == "admin" and status == "active" and active_admin_count <= 1
     _status_badge(status)
     st.caption(
         f"ID: {user.id} | Role: {user.role} | "
-        f"Created: {user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else 'N/A'} | "
-        f"Last login: {user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never'} | "
+        f"Created: {_format_datetime(user.created_at)} | "
+        f"Last login: {_format_datetime(user.last_login, 'Never')} | "
         f"Phone: {user.phone_number or 'not provided'}"
     )
     if user.additional_profile_info:
         st.caption(f"Profile notes: {user.additional_profile_info}")
 
-    with st.container(border=True):
-        st.markdown("#### Edit User")
-        with st.form(f"edit_user_{user.id}"):
-            col1, col2 = st.columns(2)
-            with col1:
-                full_name = st.text_input("Full Name", value=user.full_name or "")
-                email = st.text_input("Email Address", value=user.email or "")
-                username = st.text_input("Username", value=user.username or "")
-            with col2:
-                phone_number = st.text_input("Phone Number", value=user.phone_number or "")
-                status_value = st.selectbox(
-                    "Account Status",
-                    ["Active", "Inactive", "Suspended"],
-                    index=(
-                        ["active", "inactive", "suspended"].index(status)
-                        if status in ["active", "inactive", "suspended"]
-                        else 0
-                    ),
-                )
-                additional_profile_info = st.text_area(
-                    "Additional Profile Information", value=user.additional_profile_info or ""
-                )
-            if st.form_submit_button("Save Changes", type="primary", width="stretch"):
-                try:
-                    update_user_account(
-                        user.id,
-                        actor_admin_id=admin.id,
-                        full_name=full_name,
-                        email=email,
-                        username=username,
-                        phone_number=phone_number,
-                        account_status=status_value.lower(),
-                        additional_profile_info=additional_profile_info,
-                    )
-                    success_toast("User updated.")
-                    st.rerun()
-                except AuthError as exc:
-                    error_state("Could not update user.", str(exc))
+    st.markdown("#### Actions")
+    view_col, edit_col, delete_col = st.columns(3)
+    with view_col:
+        if st.button("View Profile", key=f"view_profile_{user.id}", width="stretch"):
+            _view_profile_dialog(user.id, admin.id)
+    with edit_col:
+        if st.button("Edit User", key=f"edit_user_button_{user.id}", width="stretch"):
+            _edit_user_dialog(user, admin)
+    with delete_col:
+        if st.button(
+            "Delete User",
+            key=f"delete_{user.id}",
+            type="secondary",
+            width="stretch",
+            disabled=is_self or is_last_active_admin,
+        ):
+            _delete_user_dialog(user, admin.id)
+        if is_self:
+            st.caption("You cannot delete your own account.")
+        elif is_last_active_admin:
+            st.caption("The last active admin account cannot be deleted.")
 
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
+    status_col, password_col = st.columns(2)
+    with status_col:
         st.markdown("#### Account status")
         new_status = st.selectbox(
             "Set status",
@@ -326,7 +416,7 @@ def _render_user_actions(user, admin) -> None:
         if is_self:
             st.caption("You cannot change the status of your own account.")
 
-    with col_b:
+    with password_col:
         st.markdown("#### Password reset")
         with st.form(f"reset_pw_{user.id}"):
             new_password = st.text_input(
@@ -356,29 +446,14 @@ def _render_user_actions(user, admin) -> None:
                     except AuthError as exc:
                         error_state("Could not reset password.", str(exc))
 
-    with col_c:
-        st.markdown("#### Delete user")
-        st.caption("Deletion requires confirmation in a dialog and cannot be undone.")
-        if st.button(
-            "Delete user",
-            key=f"delete_{user.id}",
-            type="secondary",
-            width="stretch",
-            disabled=(user.role == "admin" or is_self),
-        ):
-            _delete_user_dialog(user, admin.id)
-        if user.role == "admin":
-            st.caption("Admin accounts cannot be deleted here.")
-        elif is_self:
-            st.caption("You cannot delete your own account.")
-
-    _render_user_activity(user)
+    _render_user_activity(user, admin.id)
 
 
-def _render_user_activity(user) -> None:
-    section("User Activity", ":material/history:")
+def _render_user_activity(user, admin_id: int) -> None:
+    section("User Activity Overview", ":material/history:")
     try:
-        from database import EventLog, InterviewSession, UserSession, get_db_context
+        snapshot = get_user_activity_for_admin(user.id, actor_admin_id=admin_id, limit=10)
+        from database import EventLog, get_db_context
 
         with get_db_context() as db:
             events = (
@@ -388,58 +463,65 @@ def _render_user_activity(user) -> None:
                 .limit(20)
                 .all()
             )
-            session_ids = [
-                row.session_id
-                for row in db.query(UserSession.session_id)
-                .filter(UserSession.user_id == user.id)
-                .all()
-            ]
-            interview_count = 0
-            recent_interviews = []
-            if session_ids:
-                interview_count = (
-                    db.query(InterviewSession)
-                    .filter(InterviewSession.session_id.in_(session_ids))
-                    .count()
-                )
-                recent_interviews = (
-                    db.query(InterviewSession)
-                    .filter(InterviewSession.session_id.in_(session_ids))
-                    .order_by(InterviewSession.created_at.desc())
-                    .limit(10)
-                    .all()
-                )
+    except Exception as exc:
+        error_state("Could not load user activity.", str(exc))
+        return
 
-        st.caption(f"Total interview sessions: {interview_count}")
+    metrics = st.columns(4)
+    metrics[0].metric("Total Interview Count", snapshot.total_interviews)
+    metrics[1].metric("Average Interview Score", _format_score(snapshot.average_score))
+    metrics[2].metric("Last Login", _format_datetime(snapshot.last_login, "Never"))
+    metrics[3].metric("Completed Interviews", snapshot.completed_interviews)
+
+    if snapshot.recent_performance:
+        st.markdown("**Recent Interview Performance**")
+        chart_rows = [
+            {
+                "Date": (item["created_at"].strftime("%m-%d %H:%M") if item["created_at"] else ""),
+                "Score": item["score"],
+            }
+            for item in snapshot.recent_performance
+            if isinstance(item["score"], (int, float))
+        ]
+        if chart_rows:
+            st.line_chart(
+                pd.DataFrame(chart_rows).set_index("Date"),
+                y=["Score"],
+                alt="Recent interview performance",
+            )
+        st.markdown("**Recent Interviews**")
         data_table(
             [
                 {
-                    "Time": e.created_at.strftime("%Y-%m-%d %H:%M") if e.created_at else "",
-                    "Type": e.event_type,
-                    "Level": e.level,
-                    "Message": e.message,
+                    "ID": item["id"],
+                    "Type": item["interview_type"],
+                    "Status": item["status"],
+                    "Score": item["score"],
+                    "Date": _format_datetime(item["created_at"]),
                 }
-                for e in events
+                for item in snapshot.recent_performance
             ],
-            "No activity recorded for this user.",
+            "No interviews found.",
         )
-        if recent_interviews:
-            st.markdown("**Recent Interviews**")
-            data_table(
-                [
-                    {
-                        "ID": i.id,
-                        "Type": i.interview_type or "",
-                        "Status": i.status or "",
-                        "Score": round(i.overall_score, 1) if i.overall_score is not None else "",
-                        "Date": i.created_at.strftime("%Y-%m-%d %H:%M") if i.created_at else "",
-                    }
-                    for i in recent_interviews
-                ],
-                "No interviews found.",
-            )
-    except Exception as exc:
-        st.warning(f"Could not load user activity: {exc}")
+    else:
+        empty_state(
+            "No interview history yet",
+            "Recent interview performance appears here after the user completes an interview.",
+        )
+
+    st.markdown("**Recent Activity**")
+    data_table(
+        [
+            {
+                "Time": _format_datetime(event.created_at),
+                "Type": event.event_type,
+                "Level": event.level,
+                "Message": event.message,
+            }
+            for event in events
+        ],
+        "No activity recorded for this user.",
+    )
 
 
 show_admin_users()
