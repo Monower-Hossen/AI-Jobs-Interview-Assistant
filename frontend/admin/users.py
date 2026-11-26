@@ -197,17 +197,20 @@ def show_admin_users() -> None:
         for user in users
         if user.role == "admin" and user.account_status == "active" and user.is_active
     )
-    _render_create_form(admin)
-    _render_users_table(users)
+    all_tab, create_tab = st.tabs(["All Users", "Create User"])
 
-    if not users:
-        st.info("No users found.")
-        return
+    with all_tab:
+        filtered_users = _render_users_table(users)
+        if not filtered_users:
+            return
+        selected = _select_user(filtered_users)
+        if selected is None:
+            return
+        with st.container(border=True):
+            _render_user_actions(selected, admin, active_admin_count)
 
-    selected = _select_user(users)
-    if selected is None:
-        return
-    _render_user_actions(selected, admin, active_admin_count)
+    with create_tab:
+        _render_create_form(admin)
 
 
 def _render_create_form(admin) -> None:
@@ -274,7 +277,7 @@ def _render_create_form(admin) -> None:
                 error_state("Could not create user.", str(exc))
 
 
-def _render_users_table(users) -> None:
+def _render_users_table(users: list[Account]) -> list[Account]:
     section("All Users", ":material/table:")
     search = st.text_input(
         "Search users", placeholder="Search by name, email, or username", key="admin_user_search"
@@ -319,16 +322,26 @@ def _render_users_table(users) -> None:
         ],
         "No users match the current filters.",
     )
+    return filtered
 
 
-def _select_user(users):
+def _select_user(users: list[Account]) -> Account | None:
     options = {
         f"{u.full_name} ({u.email}, @{u.username or 'no-username'}, {_status_for_row(u).title()}) [id {u.id}]": u.id
         for u in users
     }
+    key = "admin_selected_user"
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = None
     selected_label = st.selectbox(
-        "Select user to manage", list(options.keys()), key="admin_selected_user"
+        "Select user to manage",
+        list(options.keys()),
+        index=None,
+        placeholder="Choose a user to manage…",
+        key=key,
     )
+    if not selected_label:
+        return None
     selected_id = options[selected_label]
     return next((u for u in users if u.id == selected_id), None)
 
@@ -442,83 +455,6 @@ def _render_user_actions(user, admin, active_admin_count: int) -> None:
                         )
                     except AuthError as exc:
                         error_state("Could not reset password.", str(exc))
-
-    _render_user_activity(user, admin.id)
-
-
-def _render_user_activity(user, admin_id: int) -> None:
-    section("User Activity Overview", ":material/history:")
-    try:
-        snapshot = get_user_activity_for_admin(user.id, actor_admin_id=admin_id, limit=10)
-        from database import EventLog, get_db_context
-
-        with get_db_context() as db:
-            events = (
-                db.query(EventLog)
-                .filter(EventLog.user_id == user.id)
-                .order_by(EventLog.created_at.desc())
-                .limit(20)
-                .all()
-            )
-    except Exception as exc:
-        error_state("Could not load user activity.", str(exc))
-        return
-
-    metrics = st.columns(4)
-    metrics[0].metric("Total Interview Count", snapshot.total_interviews)
-    metrics[1].metric("Average Interview Score", _format_score(snapshot.average_score))
-    metrics[2].metric("Last Login", _format_datetime(snapshot.last_login, "Never"))
-    metrics[3].metric("Completed Interviews", snapshot.completed_interviews)
-
-    if snapshot.recent_performance:
-        st.markdown("**Recent Interview Performance**")
-        chart_rows = [
-            {
-                "Date": (item["created_at"].strftime("%m-%d %H:%M") if item["created_at"] else ""),
-                "Score": item["score"],
-            }
-            for item in snapshot.recent_performance
-            if isinstance(item["score"], (int, float))
-        ]
-        if chart_rows:
-            st.line_chart(
-                pd.DataFrame(chart_rows).set_index("Date"),
-                y=["Score"],
-                alt="Recent interview performance",
-            )
-        st.markdown("**Recent Interviews**")
-        data_table(
-            [
-                {
-                    "ID": item["id"],
-                    "Type": item["interview_type"],
-                    "Status": item["status"],
-                    "Score": item["score"],
-                    "Date": _format_datetime(item["created_at"]),
-                }
-                for item in snapshot.recent_performance
-            ],
-            "No interviews found.",
-        )
-    else:
-        empty_state(
-            "No interview history yet",
-            "Recent interview performance appears here after the user completes an interview.",
-        )
-
-    st.markdown("**Recent Activity**")
-    data_table(
-        [
-            {
-                "Time": _format_datetime(event.created_at),
-                "Type": event.event_type,
-                "Level": event.level,
-                "Message": event.message,
-            }
-            for event in events
-        ],
-        "No activity recorded for this user.",
-    )
 
 
 show_admin_users()
