@@ -168,11 +168,6 @@ def _admin_pages() -> dict:
                 title="User Activity Overview",
                 icon=":material/history:",
             ),
-            st.Page(
-                "frontend/admin/registration_requests.py",
-                title="Registration Requests",
-                icon=":material/how_to_reg:",
-            ),
         ],
         "Interview": [
             st.Page(
