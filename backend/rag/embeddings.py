@@ -36,17 +36,18 @@ class EmbeddingModel:
         self._dimension = self._model.get_embedding_dimension()
 
     def encode(
-        self, texts: list[str], batch_size: int = 32, show_progress_bar: bool = False
+        self, texts: list[str], batch_size: int | None = None, show_progress_bar: bool = False
     ) -> np.ndarray:
         if isinstance(texts, str):
             texts = [texts]
         if not texts:
             return np.array([])
+        resolved_batch_size = max(1, int(batch_size or settings.embedding_batch_size))
 
         with acquire_heavy_task("embedding_generation"):
             embeddings = self._model.encode(
                 texts,
-                batch_size=batch_size,
+                batch_size=resolved_batch_size,
                 show_progress_bar=show_progress_bar,
                 convert_to_numpy=True,
                 normalize_embeddings=True,
