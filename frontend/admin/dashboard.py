@@ -208,10 +208,11 @@ def _render_registration_overview(overview: AdminOverview) -> None:
         with columns[2]:
             st.metric("Rejected registrations", counts.get("rejected", 0))
         st.page_link(
-            "frontend/admin/registration_requests.py",
+            "frontend/admin/users.py",
             label="Review registration requests",
             icon=":material/fact_check:",
             width="stretch",
+            query_params={"admin_users_view": "Registration Requests"},
         )
 
 

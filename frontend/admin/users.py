@@ -20,6 +20,7 @@ from services.auth_service import (
     update_user_account,
 )
 
+from frontend.admin.registration_requests_view import render_registration_requests_section
 from frontend.shared.auth_ui import clear_credential_state
 from frontend.shared.components import (
     data_table,
@@ -191,15 +192,21 @@ def show_admin_users() -> None:
     admin = _require_admin()
     page_header("User Management", "Create, update, and manage user accounts", ":material/group:")
 
-    users = list_users(actor_admin_id=admin.id)
-    active_admin_count = sum(
-        1
-        for user in users
-        if user.role == "admin" and user.account_status == "active" and user.is_active
+    view = st.segmented_control(
+        "User management view",
+        ["All Users", "Create User", "Registration Requests"],
+        default="All Users",
+        key="admin_users_view",
+        bind="query-params",
     )
-    all_tab, create_tab = st.tabs(["All Users", "Create User"])
 
-    with all_tab:
+    if view == "All Users":
+        users = list_users(actor_admin_id=admin.id)
+        active_admin_count = sum(
+            1
+            for user in users
+            if user.role == "admin" and user.account_status == "active" and user.is_active
+        )
         filtered_users = _render_users_table(users)
         if not filtered_users:
             return
@@ -208,9 +215,10 @@ def show_admin_users() -> None:
             return
         with st.container(border=True):
             _render_user_actions(selected, admin, active_admin_count)
-
-    with create_tab:
+    elif view == "Create User":
         _render_create_form(admin)
+    else:
+        render_registration_requests_section(admin)
 
 
 def _render_create_form(admin) -> None:
@@ -327,7 +335,7 @@ def _render_users_table(users: list[Account]) -> list[Account]:
 
 def _select_user(users: list[Account]) -> Account | None:
     options = {
-        f"{u.full_name} ({u.email}, @{u.username or 'no-username'}, {_status_for_row(u).title()}) [id {u.id}]": u.id
+        f"{u.full_name} ({u.email}, @{u.username or 'no-username'}) [id {u.id}]": u.id
         for u in users
     }
     key = "admin_selected_user"
