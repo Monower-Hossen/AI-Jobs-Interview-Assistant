@@ -898,7 +898,7 @@ class ProviderManager:
             registration = self.registry.get(name)
             if registration is None or not registration.enabled:
                 continue
-            if name == "ollama" and not settings.enable_ollama and primary != "ollama":
+            if name == "ollama" and not settings.enable_ollama:
                 continue
             try:
                 providers.append(registration.factory())

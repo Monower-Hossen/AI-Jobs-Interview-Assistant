@@ -34,9 +34,9 @@ def _text_hash(source_type: str, text: str) -> str:
 
 @lru_cache(maxsize=16)
 def _shared_store(session_token: str, model_name: str) -> FAISSVectorStore:
-    store = FAISSVectorStore()
+    store = FAISSVectorStore(model_name=model_name)
     if not store.load(Path(settings.vector_store_path) / _safe_token(session_token)):
-        store = FAISSVectorStore()
+        store = FAISSVectorStore(model_name=model_name)
     return store
 
 

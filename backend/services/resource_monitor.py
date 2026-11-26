@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,12 @@ except Exception:  # pragma: no cover - optional dependency
 class ResourceBusyError(RuntimeError):
     """Raised when a heavy operation cannot start due to guardrails."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
-class MemoryPressureError(RuntimeError):
+
+class MemoryPressureError(ResourceBusyError):
     """Raised when available memory is too low for a heavy operation."""
 
 
@@ -127,6 +131,7 @@ class _ResourceLeaseManager:
             "video_analysis",
         }
     )
+    _LIGHTWEIGHT_MEMORY_TASKS = frozenset({"llm_inference", "audio_analysis", "webrtc_session"})
     _DEFAULT_BUDGETS: ClassVar[dict[str, int]] = {
         "whisper_transcription": 1,
         "video_processing": 1,
@@ -135,6 +140,7 @@ class _ResourceLeaseManager:
         "llm_inference": 4,
         "video_analysis": 1,
         "audio_analysis": 2,
+        "webrtc_session": 1,
     }
     _EXCLUSIONS: ClassVar[dict[str, tuple[str, ...]]] = {
         "whisper_transcription": ("video_processing",),
@@ -144,6 +150,7 @@ class _ResourceLeaseManager:
         "video_analysis": ("whisper_transcription", "embedding_generation"),
         "live_recording": (),
         "llm_inference": (),
+        "webrtc_session": (),
     }
 
     def __init__(self) -> None:
@@ -198,6 +205,75 @@ class _ResourceLeaseManager:
     def _record_rejection(self, code: AdmissionRejectionReason) -> None:
         with _STATE_LOCK:
             self._rejected[code.value] = self._rejected.get(code.value, 0) + 1
+
+    def record_rejection(self, code: AdmissionRejectionReason) -> None:
+        self._record_rejection(code)
+
+    def _memory_requirement(
+        self,
+        task: str,
+        *,
+        settings: Any,
+    ) -> float:
+        critical_mb = self._bounded_number(
+            self._setting(settings, "resource_critical_available_mb", 900),
+            default=900,
+            minimum=128,
+            maximum=32768,
+        )
+        low_mb = self._bounded_number(
+            self._setting(settings, "resource_low_available_mb", 1600),
+            default=1600,
+            minimum=256,
+            maximum=32768,
+        )
+        low_memory = bool(self._setting(settings, "resource_low_memory_mode", False))
+        if task in self._LIGHTWEIGHT_MEMORY_TASKS:
+            return self._bounded_number(
+                self._setting(settings, "resource_lightweight_available_mb", 256),
+                default=256,
+                minimum=128,
+                maximum=32768,
+            )
+        if low_memory and task in self._HEAVY_TASKS:
+            return low_mb
+        return critical_mb
+
+    @staticmethod
+    def _active_work_summary(counts: dict[str, int]) -> str:
+        active = [
+            f"{_task_label(name)} x{count}"
+            for name, count in sorted(counts.items())
+            if count > 0
+        ]
+        if not active:
+            return "No in-app heavy tasks are active right now."
+        return "In-app active work: " + ", ".join(active) + "."
+
+    def _memory_rejection_message(
+        self,
+        task: str,
+        *,
+        available_mb: float,
+        required_mb: float,
+        counts: dict[str, int],
+    ) -> str:
+        active_summary = self._active_work_summary(counts)
+        lightweight = task in self._LIGHTWEIGHT_MEMORY_TASKS
+        current = f"{available_mb:.0f} MB free"
+        required = f"more than {required_mb:.0f} MB"
+        if lightweight:
+            return (
+                f"Available system memory is low ({current}; "
+                f"{_task_label(task)} needs {required}). {active_summary} "
+                "Close other apps or retry after memory recovers."
+            )
+        return (
+            f"Available system memory is critically low ({current}; "
+            f"{_task_label(task)} needs {required}). {active_summary} "
+            "Close other apps, stop local transcription or video work, or continue with "
+            "Groq/Gemini cloud AI instead. Retry after memory recovers."
+        )
 
     def _evaluate_locked(
         self,
@@ -254,23 +330,16 @@ class _ResourceLeaseManager:
 
         guardrails_enabled = bool(self._setting(settings, "resource_guardrails_enabled", True))
         if guardrails_enabled:
-            critical_mb = self._bounded_number(
-                self._setting(settings, "resource_critical_available_mb", 900),
-                default=900,
-                minimum=128,
-                maximum=32768,
-            )
-            low_mb = self._bounded_number(
-                self._setting(settings, "resource_low_available_mb", 1600),
-                default=1600,
-                minimum=256,
-                maximum=32768,
-            )
-            required_mb = low_mb if low_memory and task in self._HEAVY_TASKS else critical_mb
+            required_mb = self._memory_requirement(task, settings=settings)
             if float(available) <= required_mb:
                 return AdmissionRejection(
                     AdmissionRejectionReason.MEMORY_LOW,
-                    "Available system memory is critically low. Close other apps or wait for other heavy work to finish, then retry.",
+                    self._memory_rejection_message(
+                        task,
+                        available_mb=float(available),
+                        required_mb=required_mb,
+                        counts=counts,
+                    ),
                 )
 
             cpu_percent = getattr(snapshot, "cpu_percent", None)
@@ -316,13 +385,15 @@ class _ResourceLeaseManager:
         worker: Any | None = None,
         worker_probe: str | None = None,
         reservation: dict[str, Any] | None = None,
+        record_rejection: bool = True,
     ) -> tuple[ResourceLease | None, AdmissionRejection | None]:
         if not str(owner_id or "").strip():
             invalid_owner = AdmissionRejection(
                 AdmissionRejectionReason.INVALID_OWNER,
                 "A resource lease owner is required.",
             )
-            self._record_rejection(invalid_owner.code)
+            if record_rejection:
+                self._record_rejection(invalid_owner.code)
             return None, invalid_owner
 
         settings = self._settings()
@@ -334,6 +405,24 @@ class _ResourceLeaseManager:
             maximum=3600,
         )
         with _STATE_LOCK:
+            duplicate = next(
+                (
+                    lease
+                    for lease in self._leases.values()
+                    if lease.status in (LeaseStatus.ACTIVE, LeaseStatus.EXPIRED)
+                    and lease.task == task
+                    and lease.owner_id == str(owner_id)
+                ),
+                None,
+            )
+            if duplicate is not None:
+                duplicate_rejection = AdmissionRejection(
+                    AdmissionRejectionReason.TASK_BUSY,
+                    f"{_task_label(task)} is already running for this session. Please wait before starting it again.",
+                )
+                if record_rejection:
+                    self._record_rejection(duplicate_rejection.code)
+                return None, duplicate_rejection
             rejection = self._evaluate_locked(
                 task,
                 snapshot=snapshot,
@@ -341,7 +430,8 @@ class _ResourceLeaseManager:
                 now_ns=now,
             )
             if rejection is not None:
-                self._rejected[rejection.code.value] = self._rejected.get(rejection.code.value, 0) + 1
+                if record_rejection:
+                    self._record_rejection(rejection.code)
                 return None, rejection
             lease = ResourceLease(
                 lease_id=uuid.uuid4().hex,
@@ -491,6 +581,7 @@ class _ResourceLeaseManager:
         now_ns: int | None = None,
         dry_run: bool = True,
         timeout_seconds: float | None = None,
+        task: str | None = None,
     ) -> dict[str, Any]:
         current = time.monotonic_ns() if now_ns is None else now_ns
         with _STATE_LOCK:
@@ -498,6 +589,7 @@ class _ResourceLeaseManager:
                 lease
                 for lease in self._leases.values()
                 if lease.status is not LeaseStatus.RELEASED
+                and (task is None or lease.task == str(task))
             ]
         expired: list[ResourceLease] = []
         for lease in leases:
@@ -641,6 +733,7 @@ _HEAVY_TASK_LABELS = {
     "llm_inference": "Language model inference",
     "video_analysis": "Video analysis",
     "audio_analysis": "Audio analysis",
+    "webrtc_session": "WebRTC session",
 }
 
 _STATE_LOCK = threading.RLock()
@@ -872,10 +965,17 @@ def _task_label(name: str) -> str:
     return _HEAVY_TASK_LABELS.get(name, name.replace("_", " ").title())
 
 
-def _safe_resource_snapshot(snapshot: ResourceSnapshot | None) -> ResourceSnapshot:
+def _safe_resource_snapshot(
+    snapshot: ResourceSnapshot | None, *, force: bool = False
+) -> ResourceSnapshot:
     if snapshot is not None:
         return snapshot
     try:
+        if force:
+            try:
+                return get_resource_snapshot(force=True)
+            except TypeError:
+                return get_resource_snapshot()
         return get_resource_snapshot()
     except Exception as exc:
         logger.debug("resource monitor read failed: %s", type(exc).__name__)
@@ -885,11 +985,34 @@ def _safe_resource_snapshot(snapshot: ResourceSnapshot | None) -> ResourceSnapsh
         )
 
 
+def _recover_stale_leases_before_admission() -> None:
+    try:
+        recover_stale_leases()
+    except Exception as exc:
+        logger.debug("stale lease recovery failed: %s", type(exc).__name__)
+
+
+def _should_retry_with_fresh_snapshot(
+    snapshot: ResourceSnapshot | None, rejection: AdmissionRejection | None
+) -> bool:
+    if snapshot is not None or rejection is None:
+        return False
+    return rejection.code in {
+        AdmissionRejectionReason.MEMORY_LOW,
+        AdmissionRejectionReason.MEMORY_UNKNOWN,
+    }
+
+
 def check_heavy_task_allowed(
     task: str, *, snapshot: ResourceSnapshot | None = None
 ) -> tuple[bool, str | None]:
+    _recover_stale_leases_before_admission()
     snap = _safe_resource_snapshot(snapshot)
     rejection = _LEASE_MANAGER.evaluate(task, snapshot=snap)
+    if _should_retry_with_fresh_snapshot(snapshot, rejection):
+        fresh = _safe_resource_snapshot(None, force=True)
+        if fresh is not snap:
+            rejection = _LEASE_MANAGER.evaluate(task, snapshot=fresh)
     if rejection is None:
         return True, None
     return False, rejection.message
@@ -904,15 +1027,32 @@ def acquire_resource_lease(
     worker_probe: str | None = None,
     reservation: dict[str, Any] | None = None,
 ) -> tuple[ResourceLease | None, AdmissionRejection | None]:
+    _recover_stale_leases_before_admission()
     snap = _safe_resource_snapshot(snapshot)
-    return _LEASE_MANAGER.acquire(
+    lease, rejection = _LEASE_MANAGER.acquire(
         task,
         owner_id=owner_id,
         snapshot=snap,
         worker=worker,
         worker_probe=worker_probe,
         reservation=reservation,
+        record_rejection=False,
     )
+    if _should_retry_with_fresh_snapshot(snapshot, rejection):
+        fresh = _safe_resource_snapshot(None, force=True)
+        if fresh is not snap:
+            lease, rejection = _LEASE_MANAGER.acquire(
+                task,
+                owner_id=owner_id,
+                snapshot=fresh,
+                worker=worker,
+                worker_probe=worker_probe,
+                reservation=reservation,
+                record_rejection=False,
+            )
+    if rejection is not None:
+        _LEASE_MANAGER.record_rejection(rejection.code)
+    return lease, rejection
 
 
 def release_resource_lease(
@@ -944,19 +1084,32 @@ def inspect_stale_leases(
     now_ns: int | None = None,
     dry_run: bool = True,
     timeout_seconds: float | None = None,
+    task: str | None = None,
 ) -> dict[str, Any]:
-    return _LEASE_MANAGER.inspect_stale(now_ns=now_ns, dry_run=dry_run, timeout_seconds=timeout_seconds)
+    return _LEASE_MANAGER.inspect_stale(
+        now_ns=now_ns,
+        dry_run=dry_run,
+        timeout_seconds=timeout_seconds,
+        task=task,
+    )
 
 
 def recover_stale_leases(
     *,
     now_ns: int | None = None,
     timeout_seconds: float | None = None,
+    task: str | None = None,
 ) -> dict[str, Any]:
-    return _LEASE_MANAGER.inspect_stale(now_ns=now_ns, dry_run=False, timeout_seconds=timeout_seconds)
+    return _LEASE_MANAGER.inspect_stale(
+        now_ns=now_ns,
+        dry_run=False,
+        timeout_seconds=timeout_seconds,
+        task=task,
+    )
 
 
 def get_resource_admission_diagnostics() -> dict[str, Any]:
+    _recover_stale_leases_before_admission()
     return _LEASE_MANAGER.diagnostics(snapshot=_safe_resource_snapshot(None))
 
 
@@ -997,6 +1150,17 @@ def end_heavy_task(
     _LEASE_MANAGER.release_legacy(task)
 
 
+def _raise_resource_busy(rejection: AdmissionRejection | None) -> NoReturn:
+    message = rejection.message if rejection is not None else "System is busy. Please try again."
+    code = rejection.code.value if rejection is not None else None
+    if rejection is not None and rejection.code in {
+        AdmissionRejectionReason.MEMORY_LOW,
+        AdmissionRejectionReason.MEMORY_UNKNOWN,
+    }:
+        raise MemoryPressureError(message, code=code)
+    raise ResourceBusyError(message, code=code)
+
+
 @contextmanager
 def resource_lease(
     task: str,
@@ -1015,9 +1179,7 @@ def resource_lease(
         worker_probe=worker_probe,
     )
     if lease is None:
-        raise ResourceBusyError(
-            rejection.message if rejection is not None else "System is busy. Please try again."
-        )
+        _raise_resource_busy(rejection)
     try:
         yield lease
     except Exception:
@@ -1047,9 +1209,7 @@ def acquire_heavy_task(
     owner = owner_id or f"legacy:{threading.get_ident()}:{uuid.uuid4().hex}"
     lease, rejection = acquire_resource_lease(task, owner_id=owner, snapshot=snapshot)
     if lease is None:
-        raise ResourceBusyError(
-            rejection.message if rejection is not None else "System is busy. Please try again."
-        )
+        _raise_resource_busy(rejection)
     try:
         yield
     finally:
