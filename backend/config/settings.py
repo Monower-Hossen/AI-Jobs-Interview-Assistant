@@ -223,6 +223,8 @@ class Settings:
 
     embedding_model: Any = _UNSET
     embedding_device: Any = _UNSET
+    embedding_dimension: Any = _UNSET
+    embedding_batch_size: Any = _UNSET
     embedding_cache_dir: Any = _UNSET
     embedding_cache_enabled: Any = _UNSET
 
@@ -251,6 +253,7 @@ class Settings:
     webrtc_audio_echo_cancellation: Any = _UNSET
     webrtc_audio_noise_suppression: Any = _UNSET
     webrtc_audio_auto_gain_control: Any = _UNSET
+    webrtc_debug_diagnostics: Any = _UNSET
     live_media_heartbeat_seconds: Any = _UNSET
     live_media_stale_seconds: Any = _UNSET
 
@@ -285,6 +288,7 @@ class Settings:
     resource_monitor_cache_seconds: Any = _UNSET
     resource_low_available_mb: Any = _UNSET
     resource_critical_available_mb: Any = _UNSET
+    resource_lightweight_available_mb: Any = _UNSET
     resource_allow_concurrent_heavy_ml: Any = _UNSET
     resource_low_memory_mode: Any = _UNSET
     resource_lease_heartbeat_seconds: Any = _UNSET
@@ -297,6 +301,7 @@ class Settings:
     resource_task_llm_inference_limit: Any = _UNSET
     resource_task_video_analysis_limit: Any = _UNSET
     resource_task_audio_analysis_limit: Any = _UNSET
+    resource_task_webrtc_session_limit: Any = _UNSET
     allow_cuda_inference: Any = _UNSET
 
     def __post_init__(self) -> None:
@@ -425,6 +430,22 @@ class Settings:
             )
         ).strip() or "sentence-transformers/all-MiniLM-L6-v2"
         self.embedding_device = str(_resolve(self.embedding_device, "EMBEDDING_DEVICE", str, "cpu")).strip().lower() or "cpu"
+        self.embedding_dimension = _resolve_number(
+            self.embedding_dimension,
+            "EMBEDDING_DIMENSION",
+            parse=int,
+            default=384,
+            minimum=1,
+            maximum=4096,
+        )
+        self.embedding_batch_size = _resolve_number(
+            self.embedding_batch_size,
+            "EMBEDDING_BATCH_SIZE",
+            parse=int,
+            default=4,
+            minimum=1,
+            maximum=32,
+        )
         self.embedding_cache_dir = _env_path("EMBEDDING_CACHE_DIR", "data/embedding_cache")
         self.embedding_cache_enabled = _resolve_bool(
             self.embedding_cache_enabled, "EMBEDDING_CACHE_ENABLED", True
@@ -465,6 +486,14 @@ class Settings:
         )
         if self.resource_critical_available_mb >= self.resource_low_available_mb:
             self.resource_critical_available_mb = max(128, self.resource_low_available_mb - 1)
+        self.resource_lightweight_available_mb = _resolve_number(
+            self.resource_lightweight_available_mb,
+            "RESOURCE_LIGHTWEIGHT_AVAILABLE_MB",
+            parse=int,
+            default=256,
+            minimum=128,
+            maximum=32768,
+        )
         self.resource_allow_concurrent_heavy_ml = _resolve_bool(
             self.resource_allow_concurrent_heavy_ml,
             "RESOURCE_ALLOW_CONCURRENT_HEAVY_ML",
@@ -505,6 +534,7 @@ class Settings:
             "resource_task_llm_inference_limit": 4,
             "resource_task_video_analysis_limit": 1,
             "resource_task_audio_analysis_limit": 2,
+            "resource_task_webrtc_session_limit": 1,
         }
         for field_name, default_limit in task_budget_defaults.items():
             setattr(
@@ -524,6 +554,7 @@ class Settings:
             self.resource_cpu_admission_threshold_percent = min(
                 float(self.resource_cpu_admission_threshold_percent), 70.0
             )
+            self.embedding_batch_size = min(int(self.embedding_batch_size), 2)
             for field_name in task_budget_defaults:
                 setattr(self, field_name, 1)
         self.allow_cuda_inference = _resolve_bool(
@@ -638,6 +669,9 @@ class Settings:
         self.webrtc_audio_auto_gain_control = _resolve_bool(
             self.webrtc_audio_auto_gain_control, "WEBRTC_AUDIO_AUTO_GAIN_CONTROL", True
         )
+        self.webrtc_debug_diagnostics = _resolve_bool(
+            self.webrtc_debug_diagnostics, "WEBRTC_DEBUG_DIAGNOSTICS", True
+        )
         self.live_media_heartbeat_seconds = _resolve_number(
             self.live_media_heartbeat_seconds,
             "LIVE_MEDIA_HEARTBEAT_SECONDS",
@@ -650,7 +684,7 @@ class Settings:
             self.live_media_stale_seconds,
             "LIVE_MEDIA_STALE_SECONDS",
             parse=float,
-            default=120.0,
+            default=45.0,
             minimum=30.0,
             maximum=900.0,
         )
