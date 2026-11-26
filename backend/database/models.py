@@ -66,6 +66,23 @@ class User(Base):
     )
 
 
+class RegistrationRequest(Base):
+    __tablename__ = "registration_requests"
+    __table_args__ = (UniqueConstraint("email", name="uq_registration_request_email"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    full_name = Column(String(200), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    password_hash = Column(String(500), nullable=False)
+    submitted_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
 class UserSettings(Base):
     __tablename__ = "user_settings"
 
@@ -146,6 +163,9 @@ class UserSession(Base):
     question_bookmarks = relationship(
         "QuestionBookmark", back_populates="session", cascade="all, delete-orphan"
     )
+    practice_attempts = relationship(
+        "QuestionPracticeAttempt", back_populates="session", cascade="all, delete-orphan"
+    )
     learning_notes = relationship(
         "LearningNote", back_populates="session", cascade="all, delete-orphan"
     )
@@ -164,6 +184,38 @@ class QuestionBookmark(Base):
     created_at = Column(DateTime, default=func.now())
 
     session = relationship("UserSession", back_populates="question_bookmarks")
+
+
+class QuestionPracticeAttempt(Base):
+    __tablename__ = "question_practice_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("user_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source = Column(String(30), default="generated")
+    source_id = Column(Integer, nullable=True)
+    question_text = Column(Text, nullable=False)
+    category = Column(String(50), default="technical")
+    difficulty = Column(String(20), default="medium")
+    expected_key_points = Column(JSON, default=list)
+    answer_text = Column(Text, nullable=False)
+    status = Column(String(20), default="evaluated")
+    overall_score = Column(Float)
+    accuracy = Column(Float)
+    relevance = Column(Float)
+    clarity = Column(Float)
+    completeness = Column(Float)
+    strengths = Column(JSON, default=list)
+    missing_points = Column(JSON, default=list)
+    improvements = Column(JSON, default=list)
+    improved_answer = Column(Text, default="")
+    final_feedback = Column(Text, default="")
+    rubric_version = Column(String(30), default="question-practice-v1")
+    submitted_at = Column(DateTime, default=func.now())
+    evaluated_at = Column(DateTime, nullable=True)
+
+    session = relationship("UserSession", back_populates="practice_attempts")
 
 
 class LearningNote(Base):
