@@ -291,7 +291,7 @@ remains the secondary provider and `GOOGLE_API_KEY` is a backward-compatible ali
 
 ## Running the Application
 
-Use the project virtual environment interpreter so Streamlit and project dependencies (including `streamlit-webrtc`) come from the same environment.
+Use the project virtual environment interpreter so Streamlit and project dependencies come from the same environment.
 
 ### Windows PowerShell
 
@@ -322,7 +322,7 @@ Optional custom port:
 python -m streamlit run app.py --server.port 8501
 ```
 
-> **Note:** A global `streamlit` or `python` executable may point to a different interpreter (for example Anaconda), which can cause missing-package errors such as `streamlit-webrtc` being unavailable even when it is installed in the project venv.
+> **Note:** A global `streamlit` or `python` executable may point to a different interpreter (for example Anaconda), which can cause missing-package errors even when dependencies are installed in the project venv.
 
 The app will open at [http://localhost:8501](http://localhost:8501).
 
@@ -472,6 +472,7 @@ pip install faster-whisper
 
 - Use `WHISPER_MODEL=tiny` for fastest transcription
 - Reduce `CHUNK_SIZE` for faster embedding
+- Lower `EMBEDDING_BATCH_SIZE` if local document indexing hits low-memory guardrails
 
 ## Future Improvements
 
