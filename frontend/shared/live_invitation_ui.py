@@ -8,12 +8,14 @@ from services.live_interview_coordination_service import (
     attach_media_session,
     get_media_config,
     heartbeat_media_session,
+    list_invitation_statuses,
     media_heartbeat_poll_seconds,
     receive_signals,
     release_media_session,
     signal_poll_seconds,
 )
 
+from frontend.shared.components import confirm_delete
 from frontend.shared.live_call_component import render_live_call
 
 
@@ -23,6 +25,39 @@ def _identity() -> tuple[int, str]:
 
 def _signal_key(room_id: str) -> str:
     return f"_live_call_signals_{room_id}"
+
+
+def _invitation_snapshot_key() -> str:
+    return "_live_invitation_status_snapshot"
+
+
+def _invitation_snapshot(statuses: list[dict[str, Any]]) -> dict[str, str]:
+    return {str(row["room_id"]): str(row["status"]) for row in statuses}
+
+
+@st.fragment(run_every=f"{max(2, min(signal_poll_seconds(), 10))}s")
+def render_invitation_refresh(user_id: int, session_token: str) -> None:
+    try:
+        statuses = list_invitation_statuses(
+            user_id=user_id,
+            session_token=session_token,
+            limit=50,
+        )
+    except Exception:
+        return
+    current = _invitation_snapshot(statuses)
+    previous = dict(st.session_state.get(_invitation_snapshot_key()) or {})
+    st.session_state[_invitation_snapshot_key()] = current
+    if not previous:
+        return
+    changed = any(
+        previous.get(room_id) == calls.INVITED and status != calls.INVITED
+        for room_id, status in current.items()
+    )
+    changed = changed or any(room_id not in previous for room_id in current)
+    changed = changed or any(room_id not in current for room_id in previous)
+    if changed:
+        st.rerun()
 
 
 def _jsonable(value: Any) -> Any:
@@ -47,12 +82,13 @@ def render_room_details(room: dict[str, Any]) -> None:
     )
 
 
-def render_action_buttons(room: dict[str, Any]) -> bool:
+def render_action_buttons(room: dict[str, Any], *, allow_delete: bool = False) -> bool:
     from services.live_interview_coordination_service import (
         accept_invitation,
         cancel_invitation,
         complete_invitation,
         decline_invitation,
+        delete_invitation,
         interrupt_invitation,
         leave_invitation,
         start_invitation,
@@ -70,7 +106,7 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
 
     if role == calls.ROLE_CANDIDATE and status == calls.INVITED:
         if columns[0].button(
-            "Accept",
+            "Accept & join",
             icon=":material/check:",
             width="stretch",
             key=f"_live_call_accept_{room_id}",
@@ -82,8 +118,9 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
                     user_id=user_id,
                     session_token=session_token,
                 ),
-                "Invitation accepted.",
+                "Invitation accepted. You can join the live call now.",
             )
+        st.caption("Accepting records participation; camera access is requested in the live call panel.")
         if columns[1].button(
             "Decline",
             icon=":material/close:",
@@ -124,12 +161,14 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             )
         st.caption("Start becomes available after the candidate accepts.")
     elif role == calls.ROLE_ADMIN and status == calls.ACCEPTED:
+        can_start = str(room.get("participant_status") or "") != calls.PARTICIPANT_LEFT
         if columns[0].button(
             "Start call",
             icon=":material/play_arrow:",
             width="stretch",
             key=f"_live_call_start_{room_id}",
             type="primary",
+            disabled=not can_start,
         ):
             changed = run(
                 lambda: start_invitation(
@@ -139,6 +178,8 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
                 ),
                 "Live call coordination started.",
             )
+        if not can_start:
+            st.caption("Start is unavailable because you have left this live call.")
     elif status == calls.IN_PROGRESS:
         if columns[0].button(
             "Complete",
@@ -184,6 +225,61 @@ def render_action_buttons(room: dict[str, Any]) -> bool:
             ),
             "You left the live call.",
         )
+
+    if allow_delete and role == calls.ROLE_ADMIN:
+        delete_key = f"_live_invitation_delete_{room_id}"
+        target_key = "_live_invitation_delete_target"
+        if status in {calls.ACCEPTED, calls.IN_PROGRESS}:
+            columns[2].button(
+                "Delete invitation",
+                icon=":material/delete:",
+                width="stretch",
+                key=f"_live_invitation_delete_start_{room_id}",
+                disabled=True,
+            )
+            st.caption(
+                "Deletion is disabled while the interview is active. End or interrupt the call first."
+            )
+        else:
+            if columns[2].button(
+                "Delete invitation",
+                icon=":material/delete:",
+                width="stretch",
+                key=f"_live_invitation_delete_start_{room_id}",
+            ):
+                st.session_state[target_key] = room_id
+                st.session_state[delete_key] = False
+                st.session_state[f"{delete_key}_ack"] = False
+                st.session_state[f"{delete_key}_resolved"] = False
+
+            if st.session_state.get(target_key) == room_id:
+                if st.session_state.get(f"{delete_key}_resolved"):
+                    confirmed = bool(st.session_state.get(delete_key))
+                    st.session_state.pop(f"{delete_key}_resolved", None)
+                    st.session_state.pop(target_key, None)
+                    st.session_state[delete_key] = False
+                    if confirmed:
+                        changed = run(
+                            lambda: delete_invitation(
+                                room_id=room_id,
+                                user_id=user_id,
+                                session_token=session_token,
+                                confirmation=True,
+                            ),
+                            "Invitation deleted.",
+                        )
+                    st.rerun()
+                confirmation_label = (
+                    "I confirm this pending invitation is no longer needed and understand "
+                    "this action is permanent"
+                    if status == calls.INVITED
+                    else None
+                )
+                confirm_delete(
+                    f"live interview invitation {room_id}",
+                    key=delete_key,
+                    confirmation_label=confirmation_label,
+                )
     return changed
 
 
@@ -210,7 +306,7 @@ def _run_action(action, success_message: str, room_id: str) -> bool:
     return True
 
 
-def _poll_signals(room_id: str, user_id: int, session_token: str) -> None:
+def _poll_signals(room_id: str, user_id: int, session_token: str) -> bool:
     media.reconcile_stale_media_sessions()
     try:
         messages = receive_signals(
@@ -220,20 +316,21 @@ def _poll_signals(room_id: str, user_id: int, session_token: str) -> None:
             limit=50,
         )
     except calls.LiveCallError:
-        return
+        return False
     except Exception:
-        return
+        return False
     if not messages:
-        return
+        return False
     key = _signal_key(room_id)
     history = list(st.session_state.get(key) or [])
     history.extend(messages)
     st.session_state[key] = history[-50:]
+    return True
 
 
 @st.fragment(run_every=f"{min(signal_poll_seconds(), media_heartbeat_poll_seconds())}s")
 def _poll_signals_fragment(room_id: str, user_id: int, session_token: str) -> None:
-    _poll_signals(room_id, user_id, session_token)
+    received = _poll_signals(room_id, user_id, session_token)
     try:
         heartbeat_media_session(
             room_id=room_id,
@@ -241,7 +338,9 @@ def _poll_signals_fragment(room_id: str, user_id: int, session_token: str) -> No
             session_token=session_token,
         )
     except Exception:
-        return
+        pass
+    if received:
+        st.rerun()
 
 
 def render_live_call_panel(room: dict[str, Any]) -> None:
@@ -262,6 +361,31 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
         "Join to request real camera and microphone access. SDP and ICE are exchanged "
         "through the authenticated invitation queue; media flows through the browser peer connection."
     )
+    role = str(room.get("role") or "")
+    if status == calls.IN_PROGRESS:
+        if role == calls.ROLE_ADMIN:
+            from services.live_interview_coordination_service import complete_invitation
+
+            if st.button(
+                "End interview",
+                icon=":material/call_end:",
+                width="stretch",
+                key=f"_live_call_end_{room_id}",
+                type="primary",
+            ):
+                changed = _run_action(
+                    lambda: complete_invitation(
+                        room_id=room_id,
+                        user_id=user_id,
+                        session_token=session_token,
+                    ),
+                    "Interview ended.",
+                    room_id,
+                )
+                if changed:
+                    st.rerun()
+        else:
+            st.caption("The administrator can end the interview.")
     _poll_signals_fragment(room_id, user_id, session_token)
 
     enabled = str(room.get("participant_status") or "") != calls.PARTICIPANT_LEFT
@@ -281,7 +405,12 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
         return
     except media.LiveCallMediaError as exc:
         st.error(str(exc), icon=":material/error:")
-        st.caption("Only one live media room can use the bounded video slot at a time.")
+        diagnostics = media.media_slot_diagnostics()
+        if diagnostics["active_room_count"]:
+            rooms = ", ".join(str(item["room_id"]) for item in diagnostics["sessions"])
+            st.caption(f"Active WebRTC room: {rooms}. Leave or end it before retrying.")
+        else:
+            st.caption("Stale WebRTC session recovery is automatic. Retry in a few seconds.")
         return
     except Exception as exc:
         st.error("Live media could not be started.", icon=":material/error:")
@@ -305,13 +434,13 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
     )
 
 
-def render_room(room: dict[str, Any]) -> bool:
+def render_room(room: dict[str, Any], *, allow_delete: bool = False) -> bool:
     room_id = str(room["room_id"])
     media.reconcile_stale_media_sessions()
     with st.container(border=True):
         st.markdown(f"### {room.get('title') or 'Live interview'}")
         st.caption(f"Room: {room_id}")
         render_room_details(room)
-        changed = render_action_buttons(room)
+        changed = render_action_buttons(room, allow_delete=allow_delete)
         render_live_call_panel(room)
     return changed
