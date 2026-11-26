@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, cast
 
-import pandas as pd
 import streamlit as st
 from config.settings import settings
 from services.auth_service import (
@@ -15,7 +14,6 @@ from services.auth_service import (
     admin_reset_password,
     delete_user,
     get_admin_user_profile,
-    get_user_activity_for_admin,
     list_users,
     require_admin,
     set_user_status,
@@ -25,7 +23,6 @@ from services.auth_service import (
 from frontend.shared.auth_ui import clear_credential_state
 from frontend.shared.components import (
     data_table,
-    empty_state,
     error_state,
     page_header,
     section,
