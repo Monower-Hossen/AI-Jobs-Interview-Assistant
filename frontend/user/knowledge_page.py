@@ -22,6 +22,13 @@ from frontend.shared.components import (
 SUPPORTED = {".pdf", ".docx", ".txt"}
 
 
+def _resource_busy_warning(exc: ResourceBusyError) -> None:
+    st.warning(
+        "This action is temporarily unavailable because system memory is low. "
+        f"{exc} Document indexing stays local; cloud interviews continue with Groq/Gemini."
+    )
+
+
 def show_knowledge_page(embedded: bool = False) -> None:
     if not embedded:
         page_header(
@@ -35,9 +42,8 @@ def show_knowledge_page(embedded: bool = False) -> None:
     except ResourceBusyError as exc:
         st.warning(
             "The knowledge library is temporarily unavailable because system memory is low. "
-            "Close other apps or wait for other heavy work to finish, then retry."
+            f"{exc} Document indexing stays local; cloud interviews continue with Groq/Gemini."
         )
-        st.caption(str(exc))
         if st.button("Retry", icon=":material/refresh:", key="kb_resource_retry"):
             st.rerun()
         return
@@ -64,9 +70,13 @@ def show_knowledge_page(embedded: bool = False) -> None:
             choice = st.selectbox("Document to manage", list(options), key="kb_manage_document")
             col1, col2 = st.columns(2)
             if col1.button("Rebuild entire index", icon=":material/refresh:", width="stretch"):
-                with st.spinner("Rebuilding the index for every document…"):
-                    count = kb.rebuild_index()
-                success_toast(f"Entire index rebuilt with {count} chunks.")
+                try:
+                    with st.spinner("Rebuilding the index for every document…"):
+                        count = kb.rebuild_index()
+                except ResourceBusyError as exc:
+                    _resource_busy_warning(exc)
+                else:
+                    success_toast(f"Entire index rebuilt with {count} chunks.")
             if col2.button("Delete document", icon=":material/delete:", width="stretch"):
                 _start_delete(options[choice], choice)
                 st.rerun()
@@ -82,6 +92,8 @@ def show_knowledge_page(embedded: bool = False) -> None:
             try:
                 with st.spinner("Retrieving relevant passages…"):
                     result = kb.answer_query(query)
+            except ResourceBusyError as exc:
+                _resource_busy_warning(exc)
             except Exception as exc:
                 error_state("Question answering failed.", str(exc))
             else:
@@ -101,6 +113,8 @@ def show_knowledge_page(embedded: bool = False) -> None:
             try:
                 with st.spinner("Searching indexed passages…"):
                     results = kb.search(raw_query)
+            except ResourceBusyError as exc:
+                _resource_busy_warning(exc)
             except Exception as exc:
                 error_state("Search failed.", str(exc))
             else:
@@ -125,6 +139,8 @@ def show_knowledge_page(embedded: bool = False) -> None:
             try:
                 with st.spinner("Generating grounded questions…"):
                     questions = kb.generate_questions(topic, count)
+            except ResourceBusyError as exc:
+                _resource_busy_warning(exc)
             except Exception as exc:
                 error_state("Question generation failed.", str(exc))
             else:
@@ -189,6 +205,9 @@ def _render_upload(kb) -> None:
                 try:
                     path, safe_name = save_uploaded_file(upload, runtime_path("data/uploads/knowledge"))
                     result = kb.add_document(path, safe_name)
+                except ResourceBusyError as exc:
+                    _resource_busy_warning(exc)
+                    break
                 except Exception as exc:
                     error_state(f"Could not index {upload.name}.", str(exc))
                 else:

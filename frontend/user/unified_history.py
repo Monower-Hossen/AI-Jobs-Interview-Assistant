@@ -14,7 +14,6 @@ from frontend.user.interview_page import _ensure_user_session
 from frontend.user.live_recording_history import show_live_recording_history
 
 JOB_REPORT_KEY = "_job_interview_report_id"
-LIVE_REPORT_KEY = "live_webcam_report_id"
 
 _VOICE_MODE = "voice"
 _AVATAR_MODE = "avatar"
@@ -244,7 +243,7 @@ def _load_job_rows(user_id: int, token: str) -> list[dict[str, Any]]:
 
 def _render_job_interview_section(user_id: int, token: str) -> None:
     section("Job Interviews", ":material/videocam:")
-    modes = {_VOICE_MODE, _AVATAR_MODE}
+    modes = {_VOICE_MODE, _AVATAR_MODE, _VIDEO_MODE}
     rows = [row for row in _load_job_rows(user_id, token) if row.get("mode") in modes]
     _render_job_records(
         rows,
@@ -257,20 +256,6 @@ def _render_job_interview_section(user_id: int, token: str) -> None:
     )
     section("Earlier practice sessions", ":material/history:")
     render_legacy_history()
-
-
-def _render_live_webcam_section(user_id: int, token: str) -> None:
-    section("Completed and saved sessions", ":material/videocam:")
-    rows = [row for row in _load_job_rows(user_id, token) if row.get("mode") == _VIDEO_MODE]
-    _render_job_records(
-        rows,
-        prefix="unified_video",
-        empty_title="No Live Webcam sessions yet.",
-        empty_detail="Sessions appear here after you start a Live Webcam Interview.",
-        report_key=LIVE_REPORT_KEY,
-        report_target="live_webcam_interview",
-        report_label="Open Live Webcam report",
-    )
 
 
 def _render_live_sessions_section(user_id: int, token: str) -> None:
@@ -336,7 +321,7 @@ def _render_recordings_section() -> None:
 def show_unified_interview_history() -> None:
     page_header(
         "Interview history",
-        "Job interviews, Live Webcam sessions, live interviews, and recordings in one place.",
+        "Job interviews, live interview sessions, and recordings in one place.",
         ":material/history:",
     )
     try:
@@ -350,13 +335,11 @@ def show_unified_interview_history() -> None:
         return
     user_id, token = identity
     tabs = st.tabs(
-        ["Job Interview", "Live Webcam", "Live Sessions", "Recordings"],
+        ["Job Interview", "Live Sessions", "Recordings"],
     )
     with tabs[0]:
         _render_job_interview_section(user_id, token)
     with tabs[1]:
-        _render_live_webcam_section(user_id, token)
-    with tabs[2]:
         _render_live_sessions_section(user_id, token)
-    with tabs[3]:
+    with tabs[2]:
         _render_recordings_section()
