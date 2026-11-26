@@ -15,8 +15,6 @@ PAGES: dict[str, str] = {
     "interview_setup": "frontend/user/job_interview.py",
     "interview": "frontend/user/job_interview.py",
     "job_interview": "frontend/user/job_interview.py",
-    "live_webcam": "frontend/user/live_webcam_interview.py",
-    "live_webcam_interview": "frontend/user/live_webcam_interview.py",
     "live_recording_history": "frontend/user/live_recording_history.py",
     "live_interview_invitations": "frontend/user/live_interview_invitations.py",
     "report": "frontend/user/report_page.py",
@@ -59,12 +57,5 @@ def go_to(page: str) -> None:
     if not (_PROJECT_ROOT / target).exists():
         st.error(f"Page is not available: {target}")
         return
-    if target != PAGES["live_webcam"]:
-        try:
-            from frontend.shared.live_session_cleanup import teardown_for_navigation
-
-            teardown_for_navigation()
-        except Exception:
-            pass
     st.session_state["current_page"] = page
     switch_page(target)

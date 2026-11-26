@@ -142,24 +142,10 @@ def _render_available_jobs() -> None:
             ):
                 st.session_state["job_interview_job_id"] = int(job.id)
                 go_to("job_interview")
-            if action_col.button(
-                "Live",
-                icon=":material/videocam:",
-                key=f"_job_browse_live_{int(job.id)}",
-                width="stretch",
-            ):
-                go_to("live_webcam")
     if st.button(
         "View my job interviews", icon=":material/history:", width="stretch", key="_job_browse_history"
     ):
         go_to("job_interview")
-    if st.button(
-        "Open live webcam setup",
-        icon=":material/videocam:",
-        width="stretch",
-        key="_job_browse_live_setup",
-    ):
-        go_to("live_webcam")
 
 
 def _format_saved_at(value) -> str:
