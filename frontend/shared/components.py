@@ -9,13 +9,6 @@ import streamlit as st
 
 
 def page_header(title: str, subtitle: str = "", icon: str = ":material/dashboard:") -> None:
-    if title != "AI live webcam interview":
-        try:
-            from frontend.shared.live_session_cleanup import teardown_for_navigation
-
-            teardown_for_navigation()
-        except Exception:
-            pass
     st.title(title, icon=icon)
     if subtitle:
         st.caption(subtitle)
@@ -296,6 +289,7 @@ def confirm_delete(
     label: str,
     key: str = "_confirm_delete_result",
     reset: bool = False,
+    confirmation_label: str | None = None,
 ) -> bool:
     """Return True only after the user confirms the deletion dialog."""
     if reset or key not in st.session_state:
@@ -308,7 +302,10 @@ def confirm_delete(
     @st.dialog("Confirm deletion", width="small", on_dismiss=_on_dismiss)
     def _dialog() -> None:
         st.warning(f"This will permanently delete: **{label}**. This action cannot be undone.")
-        confirmed = st.checkbox("I understand this action is permanent", key=f"{key}_ack")
+        confirmed = st.checkbox(
+            confirmation_label or "I understand this action is permanent",
+            key=f"{key}_ack",
+        )
         col1, col2 = st.columns(2)
         if col1.button("Cancel", width="stretch"):
             st.session_state[key] = False

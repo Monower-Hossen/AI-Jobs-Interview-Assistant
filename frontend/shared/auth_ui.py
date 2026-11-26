@@ -1,4 +1,4 @@
-"""Sign-in, registration and account management UI."""
+"""Sign-in, registration-request navigation and account management UI."""
 
 import streamlit as st
 from services.auth_service import (
@@ -84,6 +84,9 @@ TRANSIENT_KEYS: tuple[str, ...] = (
     "profile_current_password",
     "profile_new_password",
     "question_start_time",
+    "registration_confirm_password",
+    "registration_password",
+    "registration_success_notice",
     "resume_analysis",
     "resume_file_hash",
     "resume_file_path",
@@ -158,6 +161,8 @@ _CREDENTIAL_KEYS: tuple[str, ...] = (
     "profile_confirm_password",
     "profile_current_password",
     "profile_new_password",
+    "registration_confirm_password",
+    "registration_password",
     "settings_gemini_key",
     "settings_groq_key",
     "sign_in_password",
@@ -171,12 +176,6 @@ def clear_credential_state() -> None:
 
 
 def show_auth_page() -> None:
-    try:
-        from frontend.shared.live_session_cleanup import teardown_for_navigation
-
-        teardown_for_navigation()
-    except Exception:
-        pass
     st.title("Sign in", icon=":material/login:", text_alignment="center")
     st.caption("Welcome back to your interview workspace.", text_alignment="center")
     with (
@@ -184,7 +183,13 @@ def show_auth_page() -> None:
         st.container(border=True, width=440),
     ):
         _render_sign_in()
-        st.caption("Need access? Contact your administrator.", text_alignment="center")
+        st.caption("Need access? Request an account below.", text_alignment="center")
+        st.page_link(
+            "frontend/shared/registration.py",
+            label="Create an account",
+            icon=":material/person_add:",
+            width="stretch",
+        )
 
 
 def _render_sign_in() -> None:
@@ -252,17 +257,6 @@ def sign_out() -> None:
     user_id = st.session_state.get("user_id")
     if user_id:
         log_event("auth.logout", user_id=user_id)
-    try:
-        from frontend.shared.live_session_cleanup import teardown_for_auth
-
-        teardown_for_auth(
-            user_id=int(user_id) if user_id is not None else None,
-            session_token=st.session_state.get("user_session_id")
-            or st.session_state.get("session_token"),
-            reason="The user signed out during live capture.",
-        )
-    except Exception:
-        pass
     stop_speech("ai_avatar")
     token = st.session_state.get("user_session_id") or st.session_state.get("session_token")
     try:
