@@ -3,7 +3,7 @@ from services import live_call_service as calls
 from services.live_interview_coordination_service import list_invitations
 
 from frontend.shared.components import empty_state, error_state, page_header, section
-from frontend.shared.live_invitation_ui import render_room
+from frontend.shared.live_invitation_ui import render_invitation_refresh, render_room
 
 
 def show_user_live_interviews() -> None:
@@ -19,6 +19,7 @@ def show_user_live_interviews() -> None:
         ":material/videocam:",
     )
     st.caption("Connection status is reported by your browser peer connection after you join.")
+    render_invitation_refresh(user_id, session_token)
 
     section("Your invitations", ":material/list:")
     try:

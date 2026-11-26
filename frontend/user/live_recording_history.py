@@ -181,8 +181,7 @@ def show_live_recording_history(show_header: bool = True) -> None:
                 _render_transcript(details.get("report") or {})
             except LiveInterviewError as exc:
                 st.caption(f"Transcript unavailable: {exc}")
-            delete_col, report_col = st.columns([1, 1])
-            if delete_col.button(
+            if st.button(
                 "Delete recording",
                 icon=":material/delete:",
                 width="stretch",
@@ -191,16 +190,6 @@ def show_live_recording_history(show_header: bool = True) -> None:
                 st.session_state[DELETE_PENDING] = True
                 st.session_state[DELETE_RECORDING_ID] = recording_id
                 st.rerun()
-            if report_col.button(
-                "Open report",
-                icon=":material/assessment:",
-                width="stretch",
-                key=f"_live_media_report_{recording_id}",
-            ):
-                st.session_state["live_webcam_report_id"] = interview_id
-                from frontend.shared.navigation import go_to
-
-                go_to("live_webcam_interview")
 
     if st.session_state.get(DELETE_PENDING):
         pending_id = st.session_state.get(DELETE_RECORDING_ID)
