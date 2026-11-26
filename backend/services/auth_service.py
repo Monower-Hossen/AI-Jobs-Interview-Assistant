@@ -19,30 +19,18 @@ from typing import Any, cast
 
 from config.settings import settings
 from database import (
-    Assessment,
-    DocumentChunk,
     EventLog,
-    GeneratedReport,
     InterviewCallParticipant,
     InterviewCallRoom,
     InterviewCallSignal,
-    InterviewProgress,
-    InterviewQuestion,
+    InterviewMedia,
     InterviewSession,
-    JobDescription,
-    KnowledgeDocument,
-    LearningActivity,
-    LearningNote,
     LearningResource,
-    LearningResourceProgress,
-    LearningRoadmap,
-    LearningTask,
-    Notification,
-    QuestionBookmark,
-    ResumeAnalysis,
-    ResumeJobMatch,
+    LiveInterviewMedia,
+    LiveInterviewRecording,
+    RegistrationRequest,
     User,
-    UserAchievement,
+    UserProfile,
     UserSession,
     UserSettings,
     get_db_context,
@@ -153,6 +141,21 @@ class Account:
         return self.role == "admin"
 
 
+@dataclass(frozen=True)
+class UserActivitySnapshot:
+    total_interviews: int
+    completed_interviews: int
+    average_score: float | None
+    last_login: datetime | None
+    recent_performance: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class AdminUserProfile:
+    account: Account
+    activity: UserActivitySnapshot
+
+
 def _normalize_status(status: str | None, is_active: bool | None = None) -> str:
     raw = (status or "").strip().lower()
     if raw in _ACCOUNT_STATUSES:
@@ -208,6 +211,22 @@ def verify_password(password: str, encoded: str) -> bool:
         return hmac.compare_digest(digest.hex(), digest_hex)
     except (ValueError, TypeError):
         return False
+
+
+def is_valid_password_hash(encoded: str) -> bool:
+    """Return True only for hashes produced by this service, never plaintext."""
+    if not isinstance(encoded, str) or not encoded or len(encoded) > 500:
+        return False
+    parts = encoded.split("$", 3)
+    if len(parts) != 4 or parts[0] != _ALGORITHM:
+        return False
+    try:
+        iterations = int(parts[1])
+        salt = bytes.fromhex(parts[2])
+        digest = bytes.fromhex(parts[3])
+    except (ValueError, TypeError):
+        return False
+    return 0 < iterations <= _MAX_VERIFY_ITERATIONS and len(salt) >= 8 and len(digest) >= 16
 
 
 def validate_email(email: str) -> str:
@@ -318,6 +337,52 @@ def require_owned_session_token(session_token: str, actor_user_id: int | None) -
         return cast(int, row.id)
 
 
+def _create_user_record(
+    db,
+    *,
+    actor_admin: User,
+    normalized_email: str,
+    normalized_username: str,
+    normalized_name: str,
+    password_hash: str,
+    status: str,
+    phone: str | None = None,
+    extra: str | None = None,
+    created_by_admin_id: int | None = None,
+    must_change_password: bool = True,
+    event_type: str = "admin.create_user",
+    event_message: str | None = None,
+) -> User:
+    """Insert a user inside the caller's transaction using shared uniqueness checks."""
+    _ensure_unique_user_fields(db, normalized_email, normalized_username)
+
+    user = User(
+        email=normalized_email,
+        username=normalized_username,
+        full_name=normalized_name,
+        phone_number=phone,
+        password_hash=password_hash,
+        role="user",
+        is_verified=True,
+        must_change_password=bool(must_change_password),
+        additional_profile_info=extra,
+        created_by_admin_id=(
+            created_by_admin_id if created_by_admin_id is not None else actor_admin.id
+        ),
+    )
+    _sync_status_fields(user, status)
+    db.add(user)
+    db.flush()
+    db.add(
+        EventLog(
+            user_id=user.id,
+            event_type=event_type,
+            message=event_message or f"User account created ({status})",
+        )
+    )
+    return user
+
+
 def create_user(
     email: str,
     password: str,
@@ -343,33 +408,69 @@ def create_user(
 
     with get_db_context() as db:
         admin = _require_admin_actor(db, actor_admin_id)
-        _ensure_unique_user_fields(db, normalized_email, normalized_username)
-
-        user = User(
-            email=normalized_email,
-            username=normalized_username,
-            full_name=normalized_name,
-            phone_number=phone,
+        user = _create_user_record(
+            db,
+            actor_admin=admin,
+            normalized_email=normalized_email,
+            normalized_username=normalized_username,
+            normalized_name=normalized_name,
             password_hash=hash_password(password),
-            role="user",
-            is_verified=True,
+            status=status,
+            phone=phone,
+            extra=extra,
+            created_by_admin_id=created_by_admin_id,
             must_change_password=bool(must_change_password),
-            additional_profile_info=extra,
-            created_by_admin_id=(
-                created_by_admin_id if created_by_admin_id is not None else admin.id
-            ),
-        )
-        _sync_status_fields(user, status)
-        db.add(user)
-        db.flush()
-        db.add(
-            EventLog(
-                user_id=user.id,
-                event_type="admin.create_user",
-                message=f"User account created ({status})",
-            )
         )
         return _to_account(user)
+
+
+def create_user_from_hash(
+    db,
+    *,
+    actor_admin_id: int | None,
+    email: str,
+    password_hash: str,
+    full_name: str,
+    username: str,
+    created_by_admin_id: int | None = None,
+    account_status: str = "active",
+    additional_profile_info: str | None = None,
+    must_change_password: bool = False,
+    event_type: str = "registration.account_created",
+    event_message: str | None = None,
+) -> Account:
+    """Create an account from an already-hashed password in an existing transaction.
+
+    Used when approving a registration request so the submitted password hash is
+    transferred verbatim and the account, audit entry, and request decision commit
+    together.
+    """
+    normalized_email = validate_email(email)
+    normalized_username = validate_username(username)
+    normalized_name = validate_full_name(full_name)
+    status = _normalize_status(account_status)
+    if status not in _ACCOUNT_STATUSES:
+        raise AuthError("Unsupported account status.")
+    if not is_valid_password_hash(password_hash):
+        raise AuthError("Invalid stored password hash.")
+
+    admin = _require_admin_actor(db, actor_admin_id)
+    extra = (additional_profile_info or "").strip() or None
+    user = _create_user_record(
+        db,
+        actor_admin=admin,
+        normalized_email=normalized_email,
+        normalized_username=normalized_username,
+        normalized_name=normalized_name,
+        password_hash=password_hash,
+        status=status,
+        extra=extra,
+        created_by_admin_id=created_by_admin_id,
+        must_change_password=bool(must_change_password),
+        event_type=event_type,
+        event_message=event_message,
+    )
+    return _to_account(user)
 
 
 def admin_create_user(
@@ -526,6 +627,59 @@ def get_account_activity(
         ]
 
 
+def get_user_activity_for_admin(
+    user_id: int, *, actor_admin_id: int | None, limit: int = 10
+) -> UserActivitySnapshot:
+    safe_limit = max(1, min(50, int(limit)))
+    with get_db_context() as db:
+        _require_admin_actor(db, actor_admin_id)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise AuthError("User not found.")
+        session_ids = [
+            row[0] for row in db.query(UserSession.id).filter(UserSession.user_id == user_id).all()
+        ]
+        interviews = (
+            db.query(InterviewSession)
+            .filter(InterviewSession.session_id.in_(session_ids))
+            .order_by(InterviewSession.created_at.desc())
+            .all()
+            if session_ids
+            else []
+        )
+        scored = [float(row.overall_score) for row in interviews if row.overall_score is not None]
+        return UserActivitySnapshot(
+            total_interviews=len(interviews),
+            completed_interviews=sum(
+                1 for row in interviews if str(row.status).lower() == "completed"
+            ),
+            average_score=round(sum(scored) / len(scored), 2) if scored else None,
+            last_login=getattr(user, "last_login", None),
+            recent_performance=tuple(
+                {
+                    "id": int(row.id),
+                    "interview_type": str(row.interview_type or ""),
+                    "status": str(row.status or ""),
+                    "score": round(float(row.overall_score), 2)
+                    if row.overall_score is not None
+                    else "",
+                    "created_at": row.created_at,
+                }
+                for row in interviews[:safe_limit]
+            ),
+        )
+
+
+def get_admin_user_profile(user_id: int, *, actor_admin_id: int | None) -> AdminUserProfile:
+    account = get_account_for_admin(user_id, actor_admin_id=actor_admin_id)
+    if account is None:
+        raise AuthError("User not found.")
+    return AdminUserProfile(
+        account=account,
+        activity=get_user_activity_for_admin(user_id, actor_admin_id=actor_admin_id),
+    )
+
+
 def set_user_role(user_id: int, role: str, *, actor_admin_id: int | None) -> None:
     if role not in {"user", "admin"}:
         raise AuthError("Unsupported role.")
@@ -623,26 +777,25 @@ def delete_user(user_id: int, *, actor_admin_id: int | None) -> None:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise AuthError("User not found.")
-        if str(user.role) == "admin":
-            raise AuthError("Admin accounts cannot be deleted from this page.")
         if user_id == admin.id:
             raise AuthError("You cannot delete your own account.")
+        if (
+            str(user.role) == "admin"
+            and _normalize_status(getattr(user, "account_status", None), bool(user.is_active))
+            == "active"
+        ):
+            active_admins = (
+                db.query(User)
+                .filter(
+                    User.role == "admin",
+                    User.account_status == "active",
+                    User.is_active.is_(True),
+                )
+                .count()
+            )
+            if active_admins <= 1:
+                raise AuthError("The last active admin account cannot be deleted.")
 
-        session_ids = [
-            row.id for row in db.query(UserSession.id).filter(UserSession.user_id == user_id).all()
-        ]
-        interview_ids = [
-            row.id
-            for row in db.query(InterviewSession.id)
-            .filter(InterviewSession.session_id.in_(session_ids))
-            .all()
-        ]
-        resume_ids = [
-            row.id
-            for row in db.query(ResumeAnalysis.id)
-            .filter(ResumeAnalysis.session_id.in_(session_ids))
-            .all()
-        ]
         call_room_ids = [
             row.id
             for row in db.query(InterviewCallRoom.id)
@@ -652,72 +805,15 @@ def delete_user(user_id: int, *, actor_admin_id: int | None) -> None:
             )
             .all()
         ]
-        job_ids = [
-            row.id
-            for row in db.query(JobDescription.id)
-            .filter(JobDescription.session_id.in_(session_ids))
-            .all()
-        ]
-        roadmap_ids = [
-            row.id
-            for row in db.query(LearningRoadmap.id)
-            .filter(LearningRoadmap.session_id.in_(session_ids))
-            .all()
-        ]
 
-        db.query(LearningResourceProgress).filter(
-            LearningResourceProgress.session_id.in_(session_ids)
-        ).delete(synchronize_session=False)
-        db.query(LearningActivity).filter(LearningActivity.session_id.in_(session_ids)).delete(
-            synchronize_session=False
+        db.query(InterviewMedia).filter(InterviewMedia.owner_user_id == user_id).update(
+            {InterviewMedia.owner_user_id: admin.id}, synchronize_session=False
         )
-        db.query(UserAchievement).filter(UserAchievement.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(Notification).filter(Notification.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(LearningTask).filter(LearningTask.roadmap_id.in_(roadmap_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(LearningRoadmap).filter(LearningRoadmap.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(InterviewQuestion).filter(
-            InterviewQuestion.interview_session_id.in_(interview_ids)
-        ).delete(synchronize_session=False)
-        db.query(GeneratedReport).filter(GeneratedReport.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(ResumeJobMatch).filter(
-            ResumeJobMatch.resume_analysis_id.in_(resume_ids)
-        ).delete(synchronize_session=False)
-        db.query(ResumeJobMatch).filter(
-            ResumeJobMatch.job_description_id.in_(job_ids)
-        ).delete(synchronize_session=False)
-        db.query(InterviewSession).filter(InterviewSession.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(DocumentChunk).filter(DocumentChunk.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(KnowledgeDocument).filter(KnowledgeDocument.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(Assessment).filter(Assessment.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(InterviewProgress).filter(
-            InterviewProgress.session_id.in_(session_ids)
-        ).delete(synchronize_session=False)
-        db.query(QuestionBookmark).filter(QuestionBookmark.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(LearningNote).filter(LearningNote.session_id.in_(session_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
-            synchronize_session=False
+        db.query(LiveInterviewRecording).filter(
+            LiveInterviewRecording.owner_user_id == user_id
+        ).update({LiveInterviewRecording.owner_user_id: admin.id}, synchronize_session=False)
+        db.query(LiveInterviewMedia).filter(LiveInterviewMedia.owner_user_id == user_id).update(
+            {LiveInterviewMedia.owner_user_id: admin.id}, synchronize_session=False
         )
         db.query(InterviewCallSignal).filter(
             (InterviewCallSignal.room_id.in_(call_room_ids))
@@ -731,17 +827,40 @@ def delete_user(user_id: int, *, actor_admin_id: int | None) -> None:
         db.query(InterviewCallRoom).filter(InterviewCallRoom.id.in_(call_room_ids)).delete(
             synchronize_session=False
         )
-        db.query(UserSession).filter(UserSession.user_id == user_id).delete(
+        db.query(UserSession).filter(UserSession.user_id == user_id).update(
+            {UserSession.user_id: None, UserSession.revoked_at: datetime.now()},
+            synchronize_session=False,
+        )
+        db.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
+            synchronize_session=False
+        )
+        db.query(UserProfile).filter(UserProfile.user_id == user_id).delete(
             synchronize_session=False
         )
         db.query(EventLog).filter(EventLog.user_id == user_id).update(
             {EventLog.user_id: None}, synchronize_session=False
+        )
+        db.query(RegistrationRequest).filter(
+            RegistrationRequest.reviewed_by_admin_id == user_id
+        ).update({RegistrationRequest.reviewed_by_admin_id: None}, synchronize_session=False)
+        db.query(RegistrationRequest).filter(RegistrationRequest.created_user_id == user_id).update(
+            {RegistrationRequest.created_user_id: None}, synchronize_session=False
         )
         db.query(LearningResource).filter(LearningResource.created_by_admin_id == user_id).update(
             {LearningResource.created_by_admin_id: None}, synchronize_session=False
         )
         db.query(User).filter(User.created_by_admin_id == user_id).update(
             {User.created_by_admin_id: None}, synchronize_session=False
+        )
+        db.add(
+            EventLog(
+                user_id=None,
+                event_type="admin.delete_user",
+                message=(
+                    f"Administrator id={admin.id} deleted account id={user.id} "
+                    f"({user.role}); interview history was retained."
+                ),
+            )
         )
         db.delete(user)
 
@@ -876,9 +995,7 @@ def bind_session_to_account(account: Account, legacy_session_id: str | None = No
                     old_token = old_token or str(owned.session_id)
                     owned.session_id = str(token)
             else:
-                owned = UserSession(
-                    session_id=str(token), user_id=account.id, label=account.email
-                )
+                owned = UserSession(session_id=str(token), user_id=account.id, label=account.email)
                 db.add(owned)
         owned.user_id = account.id
         owned.revoked_at = None

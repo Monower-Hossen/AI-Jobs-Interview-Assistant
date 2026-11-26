@@ -9,6 +9,7 @@ from services.job_interview_constants import (
     DIFFICULTIES,
     INTERVIEW_CATEGORIES,
 )
+from sqlalchemy import func
 
 
 class JobPostError(ValueError):
@@ -186,6 +187,21 @@ def get_job_post(
         return job
 
 
+def get_job_statistics(*, actor_admin_id: int | None) -> dict[str, int | None]:
+    require_admin(actor_admin_id)
+    with get_db_context() as db:
+        total = int(db.query(func.count(JobPost.id)).scalar() or 0)
+        published = int(
+            db.query(func.count(JobPost.id)).filter(JobPost.is_published.is_(True)).scalar() or 0
+        )
+    return {
+        "total": total,
+        "published": published,
+        "draft": total - published,
+        "expired": None,
+    }
+
+
 def list_jobs(
     *,
     actor_admin_id: int | None = None,
@@ -194,13 +210,25 @@ def list_jobs(
     company: str = "",
     skill: str = "",
     difficulty: str = "",
+    category: str = "",
+    status: str = "",
 ) -> list[JobPost]:
     if include_unpublished:
         require_admin(actor_admin_id)
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"", "all", "published", "draft"}:
+        raise JobPostError("Unsupported job status.")
+    normalized_category = str(category or "").strip()
+    if normalized_category and normalized_category not in INTERVIEW_CATEGORIES:
+        raise JobPostError("Unsupported job category.")
     with get_db_context() as db:
         query = db.query(JobPost)
         if not include_unpublished:
             query = query.filter(JobPost.is_published.is_(True))
+        if normalized_status == "published":
+            query = query.filter(JobPost.is_published.is_(True))
+        elif normalized_status == "draft":
+            query = query.filter(JobPost.is_published.is_(False))
         if search.strip():
             term = f"%{search.strip().lower()}%"
             query = query.filter(
@@ -222,7 +250,15 @@ def list_jobs(
                 .all()
             ]
             query = query.filter(JobPost.id.in_(skill_ids or [-1]))
-        return query.order_by(JobPost.created_at.desc(), JobPost.id.desc()).all()
+        rows = query.order_by(JobPost.created_at.desc(), JobPost.id.desc()).all()
+        if normalized_category:
+            target = normalized_category.lower()
+            rows = [
+                row
+                for row in rows
+                if target in {str(item).lower() for item in (row.question_preferences or [])}
+            ]
+        return rows
 
 
 def get_job_skills(job_id: int) -> list[JobSkill]:
