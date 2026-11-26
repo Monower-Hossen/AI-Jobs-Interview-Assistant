@@ -1,5 +1,4 @@
 import asyncio
-import atexit
 import logging
 import os
 import sys
@@ -43,27 +42,6 @@ from services.auth_service import get_account, is_admin_role
 from frontend.shared.auth_ui import show_auth_page, sign_out
 
 
-def _teardown_live_capture(reason: str) -> None:
-    try:
-        from frontend.shared.live_session_cleanup import teardown_for_auth
-
-        teardown_for_auth(reason=reason)
-    except Exception:
-        logging.getLogger(__name__).exception("live_capture_teardown_failed")
-
-
-def _shutdown_live_capture() -> None:
-    try:
-        from services.live_webcam_video import shutdown_all_video_recorders
-
-        shutdown_all_video_recorders()
-    except Exception:
-        logging.getLogger(__name__).exception("live_capture_shutdown_failed")
-
-
-atexit.register(_shutdown_live_capture)
-
-
 def main() -> None:
     st.set_page_config(
         page_title="AI Interview Intelligence Platform",
@@ -88,7 +66,6 @@ def main() -> None:
         account = _current_account()
     except Exception:
         logging.getLogger(__name__).exception("auth.resolve_account_failed")
-        _teardown_live_capture("Session validation failed during live capture.")
         st.session_state.pop("account", None)
         st.session_state.pop("user_id", None)
         st.session_state.pop("must_change_password", None)
@@ -102,8 +79,16 @@ def main() -> None:
         )
 
     if account is None:
-        login_page = st.Page(show_auth_page, title="Sign in", icon=":material/login:")
-        st.navigation([login_page], position="hidden").run()
+        navigation_pages = [
+            st.Page(show_auth_page, title="Sign in", icon=":material/login:"),
+            st.Page(
+                "frontend/shared/registration.py",
+                title="Create account",
+                icon=":material/person_add:",
+                url_path="register",
+            ),
+        ]
+        st.navigation(navigation_pages, position="hidden").run()
         return
 
     # If user must change password, allow only the password change page
@@ -144,7 +129,6 @@ def _current_account():
 
     account = get_account(int(user_id))
     if account is None or not getattr(account, "is_active", False):
-        _teardown_live_capture("The account became inactive during live capture.")
         st.session_state.pop("account", None)
         st.session_state.pop("user_id", None)
         st.session_state.pop("must_change_password", None)
@@ -176,6 +160,16 @@ def _admin_pages() -> dict:
                 icon=":material/admin_panel_settings:",
             ),
             st.Page("frontend/admin/users.py", title="User Management", icon=":material/group:"),
+            st.Page(
+                "frontend/admin/user_activity.py",
+                title="User Activity Overview",
+                icon=":material/history:",
+            ),
+            st.Page(
+                "frontend/admin/registration_requests.py",
+                title="Registration Requests",
+                icon=":material/how_to_reg:",
+            ),
         ],
         "Interview": [
             st.Page(
@@ -183,11 +177,6 @@ def _admin_pages() -> dict:
                 title="Job postings",
                 icon=":material/work:",
                 url_path="admin-jobs",
-            ),
-            st.Page(
-                "frontend/admin/interviews.py",
-                title="Interview Management",
-                icon=":material/forum:",
             ),
             st.Page(
                 "frontend/admin/live_interview_invitations.py",
@@ -253,12 +242,6 @@ def _user_pages(account) -> dict:
                 title="Job Interview",
                 icon=":material/videocam:",
                 url_path="job-interview",
-            ),
-            st.Page(
-                "frontend/user/live_webcam_interview.py",
-                title="Live Interview",
-                icon=":material/videocam:",
-                url_path="live-webcam-interview",
             ),
             st.Page(
                 "frontend/user/live_interview_invitations.py",
