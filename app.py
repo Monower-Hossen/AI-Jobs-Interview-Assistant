@@ -56,7 +56,10 @@ def main() -> None:
             st.session_state.db_initialized = True
         except Exception:
             logging.getLogger(__name__).exception("db.init_failed")
-            st.error("Database initialization failed. Please check logs and try again.", icon=":material/error:")
+            st.error(
+                "Database initialization failed. Please check logs and try again.",
+                icon=":material/error:",
+            )
             st.stop()
 
     if "user_session_id" not in st.session_state:

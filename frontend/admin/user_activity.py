@@ -107,9 +107,24 @@ def show_admin_user_activity() -> None:
     kpi_row(
         [
             ("Total Interview Count", snapshot.total_interviews, None, ":material/assignment:"),
-            ("Completed Interviews", snapshot.completed_interviews, None, ":material/check_circle:"),
-            ("Average Interview Score", _format_score(snapshot.average_score), None, ":material/score:"),
-            ("Last Login", _format_datetime(snapshot.last_login, "Never"), None, ":material/login:"),
+            (
+                "Completed Interviews",
+                snapshot.completed_interviews,
+                None,
+                ":material/check_circle:",
+            ),
+            (
+                "Average Interview Score",
+                _format_score(snapshot.average_score),
+                None,
+                ":material/score:",
+            ),
+            (
+                "Last Login",
+                _format_datetime(snapshot.last_login, "Never"),
+                None,
+                ":material/login:",
+            ),
         ]
     )
 
@@ -117,9 +132,7 @@ def show_admin_user_activity() -> None:
     if snapshot.recent_performance:
         chart_rows = [
             {
-                "Date": (
-                    item["created_at"].strftime("%m-%d %H:%M") if item["created_at"] else ""
-                ),
+                "Date": (item["created_at"].strftime("%m-%d %H:%M") if item["created_at"] else ""),
                 "Score": item["score"],
             }
             for item in snapshot.recent_performance
