@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from config.settings import settings
@@ -40,6 +41,11 @@ def _role_for(room, user_id: int) -> str:
     if int(room.candidate_user_id) == int(user_id):
         return calls.ROLE_CANDIDATE
     return "unknown"
+
+
+def _participant_key(room_id: str, user_id: Any, role: str) -> str:
+    digest = hashlib.sha256(f"{room_id}:{user_id}:{role}".encode()).hexdigest()
+    return f"{str(role)[:1]}:{digest[:10]}"
 
 
 def _participant_status(db, room, user_id: int) -> str | None:
@@ -101,9 +107,33 @@ def list_invitations(
         for room in rooms:
             summary = _room_dict(db, room, role=_role_for(room, parsed_user_id))
             summary["participant_status"] = _participant_status(db, room, parsed_user_id)
+            summary.update(
+                calls.get_call_signal_summary(
+                    db,
+                    str(room.room_id),
+                    user_id=parsed_user_id,
+                    session_token=session_token,
+                )
+            )
             _reconcile_media_if_terminal(summary)
             summaries.append(summary)
         return summaries
+
+
+def list_invitation_statuses(
+    *,
+    user_id: Any,
+    session_token: Any,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    with get_db_context() as db:
+        calls.expire_stale_invites(db, limit=100)
+        return calls.list_user_call_statuses(
+            db,
+            user_id=user_id,
+            session_token=session_token,
+            limit=limit,
+        )
 
 
 def get_invitation(
@@ -136,13 +166,33 @@ def accept_invitation(
     session_token: Any,
 ) -> dict[str, Any]:
     with get_db_context() as db:
-        room = calls.accept_invite_authenticated(
-            db,
-            room_id,
-            user_id=user_id,
-            session_token=session_token,
-        )
+        try:
+            room = calls.accept_invite_authenticated(
+                db,
+                room_id,
+                user_id=user_id,
+                session_token=session_token,
+            )
+        except calls.LiveCallExpired:
+            calls.expire_stale_invites(db, room_id=room_id, limit=10)
+            db.commit()
+            raise
+        except calls.LiveCallInvalidTransition:
+            db.rollback()
+            current = get_invitation(
+                room_id=room_id,
+                user_id=user_id,
+                session_token=session_token,
+            )
+            already_joined = (
+                str(current.get("status")) in {calls.ACCEPTED, calls.IN_PROGRESS}
+                and str(current.get("participant_status")) == calls.PARTICIPANT_JOINED
+            )
+            if not already_joined:
+                raise
+            return current
         summary = _room_dict(db, room, role=calls.ROLE_CANDIDATE)
+        summary["participant_status"] = calls.PARTICIPANT_JOINED
         _reconcile_media_if_terminal(summary)
         return summary
 
@@ -180,6 +230,25 @@ def cancel_invitation(
         )
         summary = _room_dict(db, room, role=calls.ROLE_ADMIN)
         _reconcile_media_if_terminal(summary)
+        return summary
+
+
+def delete_invitation(
+    *,
+    room_id: str,
+    user_id: Any,
+    session_token: Any,
+    confirmation: bool,
+) -> dict[str, Any]:
+    with get_db_context() as db:
+        summary = calls.delete_invitation(
+            db,
+            room_id,
+            user_id=user_id,
+            session_token=session_token,
+            confirmation=confirmation,
+        )
+        media.reconcile_room_media(room_id=str(summary["room_id"]), terminal=True)
         return summary
 
 
@@ -343,7 +412,12 @@ def get_media_config(
         user_id=user_id,
         session_token=session_token,
     )
-    return media.media_config(room_id=room_id, role=str(room["role"]))
+    role = str(room["role"])
+    return media.media_config(
+        room_id=room_id,
+        role=role,
+        participant_key=_participant_key(room_id, user_id, role),
+    )
 
 
 def attach_media_session(

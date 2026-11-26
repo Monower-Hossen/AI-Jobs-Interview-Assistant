@@ -63,6 +63,7 @@ SIGNAL_ICE_CANDIDATE = "ice_candidate"
 SIGNAL_ICE_GATHERING_COMPLETE = "ice_gathering_complete"
 SIGNAL_HANGUP = "hangup"
 SIGNAL_PING = "ping"
+SIGNAL_MEDIA_STATE = "media_state"
 SIGNAL_TYPES = frozenset(
     {
         SIGNAL_OFFER,
@@ -71,6 +72,7 @@ SIGNAL_TYPES = frozenset(
         SIGNAL_ICE_GATHERING_COMPLETE,
         SIGNAL_HANGUP,
         SIGNAL_PING,
+        SIGNAL_MEDIA_STATE,
     }
 )
 
@@ -389,6 +391,12 @@ def _validate_signal_payload(kind: str, payload: dict[str, Any]) -> dict[str, An
             not isinstance(clean["nonce"], str) or len(clean["nonce"]) > 64
         ):
             raise LiveCallInvalidSignal("Ping nonce is invalid.")
+    elif kind == SIGNAL_MEDIA_STATE:
+        allowed = {"camera", "mic"}
+        required = set()
+        for field in ("camera", "mic"):
+            if field in clean and not isinstance(clean[field], bool):
+                raise LiveCallInvalidSignal(f"Media state {field} is invalid.")
     else:
         raise LiveCallInvalidSignal("Unsupported live call signal type.")
     unexpected = set(clean) - allowed
@@ -505,6 +513,40 @@ def list_user_calls(
         .limit(capped)
         .all()
     )
+
+
+def list_user_call_statuses(
+    db: Session,
+    *,
+    user_id: Any,
+    session_token: Any,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    user = _load_active_user(db, user_id)
+    _require_session(db, int(user.id), session_token)
+    capped = _bounded_int(limit, 50, 1, 100)
+    rows = (
+        db.query(
+            InterviewCallRoom.room_id,
+            InterviewCallRoom.status,
+            InterviewCallRoom.expires_at,
+        )
+        .filter(
+            (InterviewCallRoom.admin_user_id == int(user.id))
+            | (InterviewCallRoom.candidate_user_id == int(user.id))
+        )
+        .order_by(InterviewCallRoom.created_at.desc(), InterviewCallRoom.id.desc())
+        .limit(capped)
+        .all()
+    )
+    return [
+        {
+            "room_id": str(row.room_id),
+            "status": str(row.status),
+            "expires_at": row.expires_at,
+        }
+        for row in rows
+    ]
 
 
 def _accept_room(access: CallAccess, current: datetime, db: Session) -> InterviewCallRoom:
@@ -626,6 +668,65 @@ def cancel_invite(
         now=current,
         expected={INVITED},
     )
+
+
+def delete_invitation(
+    db: Session,
+    room_id: str,
+    *,
+    user_id: Any,
+    session_token: Any,
+    confirmation: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current = _coerce_now(now)
+    expire_stale_invites(db, now=current, room_id=str(room_id), limit=1)
+    access = require_call_access(db, room_id, user_id, session_token)
+    if access.role != ROLE_ADMIN:
+        raise LiveCallPermissionDenied("Only the administrator can delete this invitation.")
+    if confirmation is not True:
+        raise LiveCallPermissionDenied("Deletion must be explicitly confirmed.")
+
+    status = str(access.room.status)
+    if status in {ACCEPTED, IN_PROGRESS}:
+        raise LiveCallInvalidTransition(
+            "Active interviews cannot be deleted. End or interrupt the call first."
+        )
+    if status not in TERMINAL_CALL_STATES | {INVITED}:
+        raise LiveCallInvalidTransition("This invitation cannot be deleted.")
+
+    internal_id = int(access.room.id)
+    public_room_id = str(access.room.room_id)
+    title = str(access.room.title or "Live interview")
+
+    signal_query = db.query(InterviewCallSignal).filter(InterviewCallSignal.room_id == internal_id)
+    participant_query = db.query(InterviewCallParticipant).filter(
+        InterviewCallParticipant.room_id == internal_id
+    )
+    room_query = db.query(InterviewCallRoom).filter(InterviewCallRoom.id == internal_id)
+    signals_removed = int(signal_query.count())
+    participants_removed = int(participant_query.count())
+    if int(room_query.count()) != 1:
+        raise LiveCallInvalidTransition("The invitation changed. Retry the operation.")
+
+    signal_query.delete(synchronize_session=False)
+    participant_query.delete(synchronize_session=False)
+    room_query.delete(synchronize_session=False)
+
+    db.add(
+        EventLog(
+            user_id=int(access.participant.user_id),
+            event_type="live_call.invitation_deleted",
+            message=f"Live call invitation {public_room_id} ({title}) was deleted.",
+        )
+    )
+    return {
+        "room_id": public_room_id,
+        "title": title,
+        "status": status,
+        "signals_removed": signals_removed,
+        "participants_removed": participants_removed,
+    }
 
 
 def start_call(
@@ -801,6 +902,8 @@ def _validate_signaling_room(db: Session, access: CallAccess, current: datetime)
     source = str(access.room.status)
     if source not in {ACCEPTED, IN_PROGRESS}:
         raise LiveCallInvalidTransition("Signals require an accepted live call.")
+    if source == IN_PROGRESS:
+        return
     if access.room.expires_at is not None and current > access.room.expires_at:
         raise LiveCallExpired("The live call invitation has expired.")
 
