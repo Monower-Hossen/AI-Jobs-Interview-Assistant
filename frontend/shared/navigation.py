@@ -40,6 +40,7 @@ PAGES: dict[str, str] = {
     "notifications": "frontend/user/notifications.py",
     "profile": "frontend/user/profile.py",
     "admin": "frontend/admin/dashboard.py",
+    "admin_user_activity": "frontend/admin/user_activity.py",
     "admin_jobs": "frontend/admin/jobs.py",
     "admin_live_media": "frontend/admin/live_media.py",
     "admin_live_interviews": "frontend/admin/live_interview_invitations.py",
