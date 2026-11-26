@@ -47,7 +47,6 @@ pydantic>=2.7.0         # Data validation and settings management
 # Web Framework
 # ===========================================
 streamlit>=1.35.0       # Web UI framework
-streamlit-webrtc==0.79.1  # Live webcam/microphone WebRTC support
 reportlab>=4.2.0        # PDF report generation
 
 # ===========================================
