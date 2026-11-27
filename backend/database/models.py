@@ -799,6 +799,7 @@ class JobPost(Base):
     interview_difficulty = Column(String(20), default="medium", index=True)
     question_preferences = Column(JSON, default=list)
     is_published = Column(Boolean, default=False, index=True)
+    application_deadline = Column(DateTime, nullable=True, index=True)
     blueprint_json = Column(JSON, nullable=True)
     created_by_admin_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True

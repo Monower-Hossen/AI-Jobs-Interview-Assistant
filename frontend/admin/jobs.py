@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 import streamlit as st
 from database.models import JobPost
 from services.job_interview_constants import DIFFICULTIES, INTERVIEW_CATEGORIES
+from services.job_post_service import JOB_DEFAULT_SORT, JOB_SORT_OPTIONS
 
 from frontend.shared.components import (
     confirm_delete,
@@ -28,6 +31,7 @@ _FORM_KEYS = [
     "interview_difficulty",
     "question_preferences",
     "is_published",
+    "application_deadline",
 ]
 _DEFAULTS_KEY = "_admin_job_form_defaults"
 _EDITING_KEY = "_admin_job_editing_id"
@@ -45,6 +49,14 @@ def _load_job_choices(jobs: list[JobPost]) -> dict[int, JobPost]:
 def _format_timestamp(value: object) -> str:
     formatted = getattr(value, "strftime", None)
     return formatted("%Y-%m-%d %H:%M") if callable(formatted) else "—"
+
+
+def _as_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
 
 
 def show_admin_jobs() -> None:
@@ -124,6 +136,7 @@ def show_admin_jobs() -> None:
                         "interview_difficulty": job.interview_difficulty or "medium",
                         "question_preferences": job.question_preferences or [],
                         "is_published": bool(job.is_published),
+                        "application_deadline": _as_date(job.application_deadline),
                     }
                     st.session_state[_EDITING_KEY] = int(selected)
                 else:
@@ -197,6 +210,11 @@ def show_admin_jobs() -> None:
                 default=defaults.get("question_preferences", list(INTERVIEW_CATEGORIES)),
                 key="_admin_job_question_preferences",
             )
+            deadline = st.date_input(
+                "Application deadline (optional)",
+                value=_as_date(defaults.get("application_deadline")),
+                key="_admin_job_application_deadline",
+            )
             published = st.checkbox(
                 "Publish immediately (users can see and interview for this job)",
                 value=bool(defaults.get("is_published", False)),
@@ -225,6 +243,7 @@ def show_admin_jobs() -> None:
                 "interview_difficulty": difficulty,
                 "question_preferences": categories,
                 "is_published": published,
+                "application_deadline": deadline,
             }
             try:
                 if st.session_state.get(_EDITING_KEY):
@@ -246,7 +265,7 @@ def show_admin_jobs() -> None:
                 st.error(str(exc), icon=":material/error:")
 
     with manage_tab:
-        search_col, category_col, status_col = st.columns(3)
+        search_col, category_col, status_col, sort_col = st.columns(4)
         search_term = search_col.text_input(
             "Search title",
             placeholder="Title, company, or description",
@@ -262,12 +281,20 @@ def show_admin_jobs() -> None:
             options=["All", "Published", "Draft"],
             key="_admin_job_status_filter",
         )
+        sort_by = sort_col.selectbox(
+            "Sort by",
+            options=list(JOB_SORT_OPTIONS),
+            index=list(JOB_SORT_OPTIONS).index(JOB_DEFAULT_SORT),
+            key="_admin_job_sort",
+        )
+        st.caption(f"Currently sorted by: {sort_by}")
         filtered_jobs = list_jobs(
             actor_admin_id=account.id,
             include_unpublished=True,
             search=search_term,
             category="" if category_filter == "All" else category_filter,
             status="" if status_filter == "All" else status_filter.lower(),
+            sort=sort_by,
         )
         filtered_choices = _load_job_choices(filtered_jobs)
         data_table(

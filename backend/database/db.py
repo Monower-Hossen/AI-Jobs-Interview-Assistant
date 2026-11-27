@@ -93,6 +93,9 @@ _ADD_COLUMNS: dict[str, dict[str, str]] = {
         "label": "TEXT",
         "revoked_at": "DATETIME",
     },
+    "job_posts": {
+        "application_deadline": "DATETIME",
+    },
     "interview_sessions": {
         "duration_seconds": "INTEGER DEFAULT 0",
         "answer_mode": "TEXT DEFAULT 'text'",

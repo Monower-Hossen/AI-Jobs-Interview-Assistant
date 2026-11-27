@@ -1,19 +1,53 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from database.db import get_db_context
-from database.models import JobPost, JobSkill
+from database.models import InterviewSession, JobPost, JobSkill
 from services.auth_service import log_event, require_admin
 from services.job_interview_constants import (
     DIFFICULTIES,
     INTERVIEW_CATEGORIES,
 )
-from sqlalchemy import func
+from sqlalchemy import and_, case, func, or_, select
 
 
 class JobPostError(ValueError):
     """Raised when job posting data is invalid."""
+
+
+JOB_SORT_NEWEST = "Newest First"
+JOB_SORT_OLDEST = "Oldest First"
+JOB_SORT_TITLE_ASC = "Job Title (A–Z)"
+JOB_SORT_TITLE_DESC = "Job Title (Z–A)"
+JOB_SORT_UPDATED = "Recently Updated"
+JOB_SORT_DEADLINE_ASC = "Application Deadline (Earliest First)"
+JOB_SORT_DEADLINE_DESC = "Application Deadline (Latest First)"
+JOB_SORT_APPLICATIONS_DESC = "Most Applications"
+JOB_SORT_APPLICATIONS_ASC = "Least Applications"
+JOB_SORT_VIEWED = "Most Viewed"
+JOB_SORT_ACTIVE = "Active Jobs First"
+JOB_SORT_DRAFT = "Draft Jobs First"
+JOB_SORT_EXPIRED = "Expired Jobs First"
+JOB_VIEW_TRACKING_AVAILABLE = False
+
+JOB_SORT_OPTIONS: tuple[str, ...] = (
+    JOB_SORT_NEWEST,
+    JOB_SORT_OLDEST,
+    JOB_SORT_TITLE_ASC,
+    JOB_SORT_TITLE_DESC,
+    JOB_SORT_UPDATED,
+    JOB_SORT_DEADLINE_ASC,
+    JOB_SORT_DEADLINE_DESC,
+    JOB_SORT_APPLICATIONS_DESC,
+    JOB_SORT_APPLICATIONS_ASC,
+    *((JOB_SORT_VIEWED,) if JOB_VIEW_TRACKING_AVAILABLE else ()),
+    JOB_SORT_ACTIVE,
+    JOB_SORT_DRAFT,
+    JOB_SORT_EXPIRED,
+)
+JOB_DEFAULT_SORT = JOB_SORT_NEWEST
 
 
 def _clean_text(value: Any, field: str, *, required: bool = False, limit: int = 200) -> str:
@@ -65,13 +99,28 @@ def _normalize_difficulty(value: Any) -> str:
     return normalized
 
 
+def _normalize_deadline(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        return datetime.fromisoformat(
+            f"{int(value.year):04d}-{int(value.month):02d}-{int(value.day):02d}"
+        )
+    try:
+        return datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise JobPostError("Application deadline is invalid.") from exc
+
+
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     title = _clean_text(payload.get("title"), "Job title", required=True, limit=200)
     company = _clean_text(payload.get("company"), "Company", required=True, limit=200)
     description = _clean_text(
         payload.get("description"), "Job description", required=True, limit=20000
     )
-    return {
+    values: dict[str, Any] = {
         "title": title,
         "company": company,
         "description": description,
@@ -86,6 +135,9 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "question_preferences": _normalize_categories(payload.get("question_preferences")),
         "is_published": bool(payload.get("is_published", False)),
     }
+    if "application_deadline" in payload:
+        values["application_deadline"] = _normalize_deadline(payload["application_deadline"])
+    return values
 
 
 def _sync_skill_rows(db: Any, job: JobPost, payload: dict[str, Any]) -> None:
@@ -202,6 +254,50 @@ def get_job_statistics(*, actor_admin_id: int | None) -> dict[str, int | None]:
     }
 
 
+def _normalize_sort(sort: str | None) -> str:
+    normalized = str(sort or "").strip()
+    if not normalized:
+        return JOB_DEFAULT_SORT
+    if normalized not in JOB_SORT_OPTIONS:
+        raise JobPostError("Unsupported job sort option.")
+    return normalized
+
+
+def _sort_jobs_query(query: Any, sort: str) -> Any:
+    now = datetime.now()
+    latest = (JobPost.created_at.desc(), JobPost.id.desc())
+    earliest = (JobPost.created_at.asc(), JobPost.id.asc())
+    application_count = (
+        select(func.count(InterviewSession.id))
+        .where(InterviewSession.job_post_id == JobPost.id)
+        .correlate(JobPost)
+        .scalar_subquery()
+    )
+    is_expired = and_(
+        JobPost.application_deadline.is_not(None),
+        JobPost.application_deadline < now,
+    )
+    is_active = and_(
+        JobPost.is_published.is_(True),
+        or_(JobPost.application_deadline.is_(None), JobPost.application_deadline >= now),
+    )
+    orderings: dict[str, tuple[Any, ...]] = {
+        JOB_SORT_NEWEST: latest,
+        JOB_SORT_OLDEST: earliest,
+        JOB_SORT_TITLE_ASC: (func.lower(JobPost.title).asc(), *earliest),
+        JOB_SORT_TITLE_DESC: (func.lower(JobPost.title).desc(), *earliest),
+        JOB_SORT_UPDATED: (JobPost.updated_at.desc(), *latest),
+        JOB_SORT_DEADLINE_ASC: (JobPost.application_deadline.asc().nullslast(), *latest),
+        JOB_SORT_DEADLINE_DESC: (JobPost.application_deadline.desc().nullslast(), *latest),
+        JOB_SORT_APPLICATIONS_DESC: (application_count.desc(), *latest),
+        JOB_SORT_APPLICATIONS_ASC: (application_count.asc(), *latest),
+        JOB_SORT_ACTIVE: (case((is_active, 1), else_=0).desc(), *latest),
+        JOB_SORT_DRAFT: (JobPost.is_published.asc(), *latest),
+        JOB_SORT_EXPIRED: (case((is_expired, 1), else_=0).desc(), *latest),
+    }
+    return query.order_by(*orderings[sort])
+
+
 def list_jobs(
     *,
     actor_admin_id: int | None = None,
@@ -212,9 +308,11 @@ def list_jobs(
     difficulty: str = "",
     category: str = "",
     status: str = "",
+    sort: str = JOB_DEFAULT_SORT,
 ) -> list[JobPost]:
     if include_unpublished:
         require_admin(actor_admin_id)
+    normalized_sort = _normalize_sort(sort)
     normalized_status = str(status or "").strip().lower()
     if normalized_status not in {"", "all", "published", "draft"}:
         raise JobPostError("Unsupported job status.")
@@ -250,7 +348,7 @@ def list_jobs(
                 .all()
             ]
             query = query.filter(JobPost.id.in_(skill_ids or [-1]))
-        rows = query.order_by(JobPost.created_at.desc(), JobPost.id.desc()).all()
+        rows = _sort_jobs_query(query, normalized_sort).all()
         if normalized_category:
             target = normalized_category.lower()
             rows = [
