@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
@@ -31,6 +32,13 @@ def _invitation_snapshot_key() -> str:
     return "_live_invitation_status_snapshot"
 
 
+_REFRESH_SUPPRESS_KEY = "_live_invitation_refresh_suppress_once"
+
+
+def suppress_next_invitation_refresh() -> None:
+    st.session_state[_REFRESH_SUPPRESS_KEY] = True
+
+
 def _invitation_snapshot(statuses: list[dict[str, Any]]) -> dict[str, str]:
     return {str(row["room_id"]): str(row["status"]) for row in statuses}
 
@@ -46,6 +54,9 @@ def render_invitation_refresh(user_id: int, session_token: str) -> None:
     except Exception:
         return
     current = _invitation_snapshot(statuses)
+    if bool(st.session_state.pop(_REFRESH_SUPPRESS_KEY, False)):
+        st.session_state[_invitation_snapshot_key()] = current
+        return
     previous = dict(st.session_state.get(_invitation_snapshot_key()) or {})
     st.session_state[_invitation_snapshot_key()] = current
     if not previous:
@@ -211,7 +222,7 @@ def render_action_buttons(room: dict[str, Any], *, allow_delete: bool = False) -
                 "Live call interrupted.",
             )
 
-    if status in {calls.ACCEPTED, calls.IN_PROGRESS} and columns[3].button(
+    if status in calls.ONGOING_CALL_STATES and columns[3].button(
         "Leave",
         icon=":material/logout:",
         width="stretch",
@@ -229,7 +240,7 @@ def render_action_buttons(room: dict[str, Any], *, allow_delete: bool = False) -
     if allow_delete and role == calls.ROLE_ADMIN:
         delete_key = f"_live_invitation_delete_{room_id}"
         target_key = "_live_invitation_delete_target"
-        if status in {calls.ACCEPTED, calls.IN_PROGRESS}:
+        if status in calls.ONGOING_CALL_STATES:
             columns[2].button(
                 "Delete invitation",
                 icon=":material/delete:",
@@ -434,10 +445,17 @@ def render_live_call_panel(room: dict[str, Any]) -> None:
     )
 
 
-def render_room(room: dict[str, Any], *, allow_delete: bool = False) -> bool:
+def render_room(
+    room: dict[str, Any],
+    *,
+    allow_delete: bool = False,
+    selection_checkbox: Callable[[], None] | None = None,
+) -> bool:
     room_id = str(room["room_id"])
     media.reconcile_stale_media_sessions()
     with st.container(border=True):
+        if selection_checkbox is not None:
+            selection_checkbox()
         st.markdown(f"### {room.get('title') or 'Live interview'}")
         st.caption(f"Room: {room_id}")
         render_room_details(room)

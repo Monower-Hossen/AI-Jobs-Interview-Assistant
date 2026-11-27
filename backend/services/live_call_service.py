@@ -34,6 +34,8 @@ CALL_STATES = frozenset(
 )
 ACTIVE_CALL_STATES = frozenset({INVITED, ACCEPTED, IN_PROGRESS})
 TERMINAL_CALL_STATES = frozenset({COMPLETED, CANCELLED, DECLINED, EXPIRED, INTERRUPTED})
+ONGOING_CALL_STATES = frozenset({ACCEPTED, IN_PROGRESS})
+DELETABLE_CALL_STATES = TERMINAL_CALL_STATES | {INVITED}
 
 _ALLOWED_TRANSITIONS = {
     INVITED: frozenset({ACCEPTED, CANCELLED, DECLINED, EXPIRED, INTERRUPTED}),
@@ -688,11 +690,11 @@ def delete_invitation(
         raise LiveCallPermissionDenied("Deletion must be explicitly confirmed.")
 
     status = str(access.room.status)
-    if status in {ACCEPTED, IN_PROGRESS}:
+    if status in ONGOING_CALL_STATES:
         raise LiveCallInvalidTransition(
             "Active interviews cannot be deleted. End or interrupt the call first."
         )
-    if status not in TERMINAL_CALL_STATES | {INVITED}:
+    if status not in DELETABLE_CALL_STATES:
         raise LiveCallInvalidTransition("This invitation cannot be deleted.")
 
     internal_id = int(access.room.id)

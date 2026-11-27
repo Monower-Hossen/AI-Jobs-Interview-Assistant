@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from typing import Any
 
 from config.settings import settings
 from database import User, get_db_context
 from services import live_call_media_service as media
 from services import live_call_service as calls
+
+MAX_BULK_DELETE_INVITATIONS = 50
+_ACTIVE_MEDIA_REASON = (
+    "An active WebRTC session is using this invitation. Leave or end the call first."
+)
 
 
 def _user_label(db, user_id: int) -> str:
@@ -250,6 +256,84 @@ def delete_invitation(
         )
         media.reconcile_room_media(room_id=str(summary["room_id"]), terminal=True)
         return summary
+
+
+def _active_media_reason(room_id: str) -> str | None:
+    try:
+        state = media.media_session_state(room_id=room_id)
+    except Exception:
+        return None
+    if bool(state.get("active")):
+        return _ACTIVE_MEDIA_REASON
+    return None
+
+
+def _skip_category(exc: BaseException) -> str:
+    if isinstance(exc, calls.LiveCallNotFound):
+        return "missing"
+    if isinstance(exc, calls.LiveCallInvalidTransition):
+        message = str(exc).lower()
+        if "active interviews cannot be deleted" in message or "cannot be deleted" in message:
+            return "active"
+        if "changed" in message:
+            return "missing"
+    return "failed"
+
+
+def bulk_delete_invitations(
+    *,
+    room_ids: Sequence[Any],
+    user_id: Any,
+    session_token: Any,
+    confirmation: bool,
+) -> dict[str, Any]:
+    if confirmation is not True:
+        raise calls.LiveCallPermissionDenied("Deletion must be explicitly confirmed.")
+    unique_ids = list(dict.fromkeys(str(room_id) for room_id in room_ids))
+    deleted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    counts = {"active": 0, "missing": 0, "failed": 0}
+
+    def _skip(room_id: str, category: str, reason: str) -> None:
+        skipped.append({"room_id": room_id, "category": category, "reason": reason})
+        counts[category] += 1
+
+    for room_id in unique_ids[:MAX_BULK_DELETE_INVITATIONS]:
+        reason = _active_media_reason(room_id)
+        if reason is not None:
+            _skip(room_id, "active", reason)
+            continue
+        try:
+            summary = delete_invitation(
+                room_id=room_id,
+                user_id=user_id,
+                session_token=session_token,
+                confirmation=True,
+            )
+        except calls.LiveCallError as exc:
+            _skip(room_id, _skip_category(exc), str(exc))
+            continue
+        except Exception as exc:
+            _skip(room_id, "failed", f"Deletion failed: {str(exc)[:200]}")
+            continue
+        deleted.append(summary)
+    for room_id in unique_ids[MAX_BULK_DELETE_INVITATIONS:]:
+        _skip(
+            room_id,
+            "failed",
+            f"Only {MAX_BULK_DELETE_INVITATIONS} invitations can be deleted at once.",
+        )
+    return {
+        "requested": len(unique_ids),
+        "deleted": deleted,
+        "skipped": skipped,
+        "deleted_count": len(deleted),
+        "skipped_count": len(skipped),
+        "counts": {
+            "deleted": len(deleted),
+            **counts,
+        },
+    }
 
 
 def start_invitation(

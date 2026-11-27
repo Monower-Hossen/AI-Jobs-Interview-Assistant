@@ -1,5 +1,8 @@
 from database.db import get_db_context, get_readonly_db
 from database.models import (
+    AdminReportHistory,
+    AIAlert,
+    AIPerformanceEvent,
     Assessment,
     Base,
     DocumentChunk,
@@ -40,6 +43,9 @@ from database.models import (
 )
 
 __all__ = [
+    "AIAlert",
+    "AIPerformanceEvent",
+    "AdminReportHistory",
     "Assessment",
     "Base",
     "DocumentChunk",

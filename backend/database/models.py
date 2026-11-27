@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -643,6 +644,47 @@ class EventLog(Base):
     user = relationship("User", back_populates="events")
 
 
+class AIPerformanceEvent(Base):
+    __tablename__ = "ai_performance_events"
+    __table_args__ = (
+        Index("ix_ai_performance_events_type_created", "event_type", "created_at"),
+        Index("ix_ai_performance_events_provider_created", "provider", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    provider = Column(String(40), nullable=True, index=True)
+    model = Column(String(120), nullable=True, index=True)
+    feature = Column(String(80), nullable=True, index=True)
+    status = Column(String(30), nullable=False, index=True)
+    severity = Column(String(20), nullable=True, index=True)
+    latency_ms = Column(Float, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    error_category = Column(String(60), nullable=True, index=True)
+    error_message = Column(Text, nullable=True)
+    request_id = Column(String(64), nullable=True, unique=True, index=True)
+    attempts = Column(Integer, nullable=False, default=1)
+    used_fallback = Column(Boolean, nullable=False, default=False)
+    details_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class AIAlert(Base):
+    __tablename__ = "ai_alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_key = Column(String(120), nullable=False, unique=True, index=True)
+    alert_type = Column(String(60), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, index=True)
+    provider = Column(String(40), nullable=True, index=True)
+    message = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="active", index=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+
+
 class LearningResource(Base):
     __tablename__ = "learning_resources"
 
@@ -1009,3 +1051,24 @@ class InterviewCallSignal(Base):
     consumed_at = Column(DateTime, nullable=True, index=True)
     expires_at = Column(DateTime, nullable=False, index=True)
     created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class AdminReportHistory(Base):
+    __tablename__ = "admin_report_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_name = Column(String(160), nullable=False)
+    category = Column(String(60), nullable=False, index=True)
+    generated_by_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    generated_by_session_id = Column(
+        Integer, ForeignKey("user_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    generated_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    date_start = Column(Date, nullable=True)
+    date_end = Column(Date, nullable=True)
+    export_format = Column(String(10), nullable=False)
+    status = Column(String(20), nullable=False, default="generated", index=True)
+    filter_json = Column(Text, nullable=False, default="{}")
+    file_name = Column(String(220), nullable=False)

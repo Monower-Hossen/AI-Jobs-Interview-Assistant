@@ -4,6 +4,7 @@ import random
 import re
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from config.settings import settings
 from pydantic import BaseModel, ValidationError
+from services.ai_performance_monitoring_service import record_llm_request
 from utils.helpers import extract_json_from_text, safe_json_parse
 
 T = TypeVar("T", bound=BaseModel)
@@ -184,6 +186,86 @@ class LLMResponse:
     provider: str
     usage: dict | None = None
     latency_ms: float = 0.0
+
+
+def _monitoring_feature(kwargs: dict[str, Any]) -> str:
+    for key in ("feature", "monitoring_feature", "purpose", "task"):
+        value = kwargs.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:80]
+    return "unspecified"
+
+
+def _new_monitoring_payload(kwargs: dict[str, Any], *, structured: bool) -> dict[str, Any]:
+    return {
+        "request_id": uuid.uuid4().hex,
+        "started": time.perf_counter(),
+        "feature": _monitoring_feature(kwargs),
+        "status": "pending",
+        "provider": None,
+        "model": None,
+        "usage": None,
+        "latency_ms": None,
+        "attempts": 0,
+        "used_fallback": False,
+        "last_error": None,
+        "structured": structured,
+    }
+
+
+def _note_monitoring_attempt(
+    payload: dict[str, Any] | None,
+    provider: str,
+    model: str,
+    *,
+    response: LLMResponse | None = None,
+    error: BaseException | None = None,
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    attempts = int(payload.get("attempts") or 0)
+    structured = bool(payload.get("structured", False))
+    if not (structured and attempts > 0):
+        payload["attempts"] = attempts + 1
+    if provider:
+        payload["provider"] = provider
+    if model:
+        payload["model"] = model
+    if response is not None:
+        payload["usage"] = response.usage
+        payload["latency_ms"] = response.latency_ms
+        if payload.get("status") != "failed":
+            payload["status"] = "success"
+    if error is not None:
+        payload["status"] = "failed"
+        payload["last_error"] = error
+
+
+def _finish_monitoring(
+    payload: dict[str, Any],
+    *,
+    status: str,
+    default_provider: str,
+    default_model: str,
+    error: BaseException | None = None,
+) -> None:
+    started = payload.get("started")
+    latency = payload.get("latency_ms")
+    if not isinstance(latency, (int, float)) and isinstance(started, (int, float)):
+        latency = (time.perf_counter() - started) * 1000
+    record_llm_request(
+        request_id=str(payload["request_id"]),
+        status=status,
+        provider=str(payload.get("provider") or default_provider or "unknown"),
+        model=str(payload.get("model") or default_model or "unknown"),
+        feature=str(payload.get("feature") or "unspecified"),
+        latency_ms=float(latency) if isinstance(latency, (int, float)) else None,
+        usage=payload.get("usage") if isinstance(payload.get("usage"), dict) else None,
+        error=error if error is not None else payload.get("last_error"),
+        attempts=max(1, int(payload.get("attempts") or 1)),
+        used_fallback=bool(payload.get("used_fallback", False)),
+        details={"structured": bool(payload.get("structured", False))},
+    )
 
 
 @dataclass
@@ -366,6 +448,7 @@ def _generate_structured(
         prompt + "\n\nIMPORTANT: Return ONLY one valid JSON object. "
         "No markdown, no ``` fences, no explanation."
     )
+    monitoring = kwargs.pop("_monitoring", None)
 
     kwargs.setdefault("max_tokens", 2200)
     kwargs.setdefault("temperature", 0.1)
@@ -374,6 +457,12 @@ def _generate_structured(
     last_error = None
     for attempt in range(2):
         response = provider.generate(json_prompt, **kwargs)
+        _note_monitoring_attempt(
+            monitoring,
+            response.provider or provider.get_provider_name(),
+            response.model or provider.get_model_name(),
+            response=response,
+        )
         parsed = safe_json_parse(response.content)
 
         if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
@@ -1006,6 +1095,7 @@ class ProviderManager:
         return self.providers[0].get_model_name()
 
     def generate(self, prompt: str, **kwargs) -> LLMResponse:
+        monitoring = kwargs.pop("_monitoring", None)
         errors: list[str] = []
         last_exc: BaseException | None = None
         for provider in self._candidates():
@@ -1019,6 +1109,7 @@ class ProviderManager:
                 response = provider.generate(prompt, **kwargs)
             except Exception as exc:
                 last_exc = exc
+                _note_monitoring_attempt(monitoring, name, model, error=exc)
                 self._record_failure(key, exc)
                 errors.append(f"{name}: {_error_message(exc)}")
                 logger.warning(
@@ -1034,6 +1125,7 @@ class ProviderManager:
                 continue
             if not isinstance(response, LLMResponse) or not response.content or not str(response.content).strip():
                 last_exc = ValueError(f"Empty/invalid response from {name}")
+                _note_monitoring_attempt(monitoring, name, model, error=last_exc)
                 self._record_failure(key, last_exc)
                 errors.append(f"{name}: empty/invalid response")
                 logger.warning(
@@ -1041,8 +1133,16 @@ class ProviderManager:
                     extra={"event": "provider.invalid_response", "provider": name, "model": model},
                 )
                 continue
+            _note_monitoring_attempt(
+                monitoring,
+                response.provider or name,
+                response.model or model,
+                response=response,
+            )
             self._record_success(key, response.latency_ms)
             fallback_triggered = bool(self.providers) and name != self.providers[0].get_provider_name()
+            if monitoring is not None and fallback_triggered:
+                monitoring["used_fallback"] = True
             if fallback_triggered:
                 logger.info(
                     "provider.fallback_used",
@@ -1057,6 +1157,7 @@ class ProviderManager:
         raise _aggregate_provider_error(errors) from last_exc
 
     def generate_structured(self, prompt: str, response_model: type[T], **kwargs) -> T:
+        monitoring = kwargs.get("_monitoring")
         errors: list[str] = []
         last_exc: BaseException | None = None
         for provider in self._candidates():
@@ -1075,6 +1176,7 @@ class ProviderManager:
                 result = provider.generate_structured(prompt, response_model, **kwargs)
             except Exception as exc:
                 last_exc = exc
+                _note_monitoring_attempt(monitoring, name, model, error=exc)
                 self._record_failure(key, exc)
                 errors.append(f"{name}: {_error_message(exc)}")
                 logger.warning(
@@ -1091,11 +1193,19 @@ class ProviderManager:
                 continue
             if result is None:
                 last_exc = ValueError(f"Empty structured response from {name}")
+                _note_monitoring_attempt(monitoring, name, model, error=last_exc)
                 self._record_failure(key, last_exc)
                 errors.append(f"{name}: empty structured response")
                 continue
+            if isinstance(monitoring, dict):
+                monitoring["provider"] = name
+                monitoring["model"] = model
+                if monitoring.get("status") != "failed":
+                    monitoring["status"] = "success"
             self._record_success(key, 0.0)
             fallback_triggered = bool(self.providers) and name != self.providers[0].get_provider_name()
+            if monitoring is not None and fallback_triggered:
+                monitoring["used_fallback"] = True
             if fallback_triggered:
                 logger.info(
                     "provider.fallback_used",
@@ -1192,10 +1302,60 @@ class LLMService:
         return self.manager.model_name
 
     def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        return self.manager.generate(prompt, **kwargs)
+        payload = _new_monitoring_payload(kwargs, structured=False)
+        kwargs["_monitoring"] = payload
+        try:
+            default_provider = self.provider_name
+            default_model = self.model_name
+        except Exception:
+            default_provider = "unknown"
+            default_model = "unknown"
+        try:
+            response = self.manager.generate(prompt, **kwargs)
+        except Exception as exc:
+            _finish_monitoring(
+                payload,
+                status="failed",
+                default_provider=default_provider,
+                default_model=default_model,
+                error=exc,
+            )
+            raise
+        _finish_monitoring(
+            payload,
+            status="success",
+            default_provider=default_provider,
+            default_model=default_model,
+        )
+        return response
 
     def generate_structured(self, prompt: str, response_model: type[T], **kwargs) -> T:
-        return self.manager.generate_structured(prompt, response_model, **kwargs)
+        payload = _new_monitoring_payload(kwargs, structured=True)
+        kwargs["_monitoring"] = payload
+        try:
+            default_provider = self.provider_name
+            default_model = self.model_name
+        except Exception:
+            default_provider = "unknown"
+            default_model = "unknown"
+        try:
+            result = self.manager.generate_structured(prompt, response_model, **kwargs)
+        except Exception as exc:
+            _finish_monitoring(
+                payload,
+                status="failed",
+                default_provider=default_provider,
+                default_model=default_model,
+                error=exc,
+            )
+            raise
+        _finish_monitoring(
+            payload,
+            status="success",
+            default_provider=default_provider,
+            default_model=default_model,
+        )
+        return result
 
     def get_provider_name(self) -> str:
         return self.provider_name
