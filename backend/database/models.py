@@ -1072,3 +1072,284 @@ class AdminReportHistory(Base):
     status = Column(String(20), nullable=False, default="generated", index=True)
     filter_json = Column(Text, nullable=False, default="{}")
     file_name = Column(String(220), nullable=False)
+
+
+class DataBackup(Base):
+    __tablename__ = "data_backups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    backup_id = Column(String(80), nullable=False, unique=True, index=True)
+    filename = Column(String(180), nullable=False)
+    backup_type = Column(String(20), nullable=False, default="manual", index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    integrity_status = Column(String(20), nullable=False, default="unknown", index=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    checksum = Column(String(64), nullable=True, index=True)
+    db_engine = Column(String(20), nullable=False, default="sqlite")
+    table_count = Column(Integer, nullable=False, default=0)
+    page_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    actor_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    error_message = Column(Text, nullable=False, default="")
+    metadata_json = Column(JSON, nullable=False, default=dict)
+
+
+class DataRetentionSetting(Base):
+    __tablename__ = "data_retention_settings"
+
+    key = Column(String(80), primary_key=True)
+    value_json = Column(JSON, nullable=False, default=dict)
+    description = Column(Text, nullable=False, default="")
+    updated_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    __table_args__ = (
+        Index("ix_support_tickets_user_updated", "user_id", "updated_at"),
+        Index("ix_support_tickets_status_priority", "status", "priority"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(String(80), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    assigned_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    subject = Column(String(200), nullable=False)
+    category = Column(String(60), nullable=False, index=True)
+    description = Column(Text, nullable=False, default="")
+    priority = Column(String(20), nullable=False, default="Medium", index=True)
+    status = Column(String(30), nullable=False, default="Open", index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    last_activity_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )
+
+
+class SupportMessage(Base):
+    __tablename__ = "support_messages"
+    __table_args__ = (Index("ix_support_messages_ticket_created", "ticket_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(
+        Integer, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    author_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    author_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    author_role = Column(String(20), nullable=False, default="user", index=True)
+    message_type = Column(String(30), nullable=False, default="reply", index=True)
+    message = Column(Text, nullable=False, default="")
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    is_read_by_user = Column(Boolean, nullable=False, default=False, index=True)
+    is_read_by_admin = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class SupportInternalNote(Base):
+    __tablename__ = "support_internal_notes"
+    __table_args__ = (Index("ix_support_internal_notes_ticket_created", "ticket_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(
+        Integer, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    admin_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    note = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class SupportFeedbackNote(Base):
+    __tablename__ = "support_feedback_notes"
+    __table_args__ = (
+        Index("ix_support_feedback_notes_feedback_created", "feedback_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feedback_id = Column(
+        Integer, ForeignKey("user_feedback.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    admin_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    note = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class SupportAttachment(Base):
+    __tablename__ = "support_attachments"
+    __table_args__ = (Index("ix_support_attachments_record", "record_type", "record_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    record_type = Column(String(30), nullable=False, index=True)
+    record_id = Column(Integer, nullable=False, index=True)
+    original_filename = Column(String(255), nullable=False)
+    safe_filename = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=False)
+    extension = Column(String(20), nullable=False)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    checksum = Column(String(64), nullable=False, index=True)
+    uploader_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    uploader_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class UserFeedback(Base):
+    __tablename__ = "user_feedback"
+    __table_args__ = (Index("ix_user_feedback_user_created", "user_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feedback_id = Column(String(80), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    category = Column(String(60), nullable=False, index=True)
+    rating = Column(Integer, nullable=False, default=5, index=True)
+    details = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="New", index=True)
+    admin_response = Column(Text, nullable=False, default="")
+    responded_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    responded_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )
+
+
+class BugReport(Base):
+    __tablename__ = "bug_reports"
+    __table_args__ = (Index("ix_bug_reports_user_created", "user_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(String(80), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title = Column(String(200), nullable=False)
+    feature = Column(String(120), nullable=False, index=True)
+    description = Column(Text, nullable=False)
+    steps_to_reproduce = Column(Text, nullable=False, default="")
+    expected_result = Column(Text, nullable=False, default="")
+    actual_result = Column(Text, nullable=False, default="")
+    severity = Column(String(20), nullable=False, default="Medium", index=True)
+    status = Column(String(30), nullable=False, default="New", index=True)
+    admin_notes = Column(Text, nullable=False, default="")
+    resolution_details = Column(Text, nullable=False, default="")
+    resolved_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )
+
+
+class FeatureRequest(Base):
+    __tablename__ = "feature_requests"
+    __table_args__ = (Index("ix_feature_requests_user_created", "user_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(80), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False)
+    category = Column(String(60), nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="Submitted", index=True)
+    admin_notes = Column(Text, nullable=False, default="")
+    published = Column(Boolean, nullable=False, default=False, index=True)
+    announced = Column(Boolean, nullable=False, default=False, index=True)
+    released_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )
+
+
+class FeatureRequestVote(Base):
+    __tablename__ = "feature_request_votes"
+    __table_args__ = (
+        UniqueConstraint("request_id", "user_id", name="uq_feature_request_vote_request_user"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(
+        Integer, ForeignKey("feature_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class ContactMessage(Base):
+    __tablename__ = "contact_messages"
+    __table_args__ = (Index("ix_contact_messages_user_created", "user_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reference_id = Column(String(80), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subject = Column(String(200), nullable=False)
+    category = Column(String(60), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="New", index=True)
+    is_read_by_admin = Column(Boolean, nullable=False, default=False, index=True)
+    admin_reply = Column(Text, nullable=False, default="")
+    replied_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    replied_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )
+
+
+class SupportFaq(Base):
+    __tablename__ = "support_faqs"
+    __table_args__ = (Index("ix_support_faqs_published_category", "is_published", "category"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    faq_id = Column(String(80), nullable=False, unique=True, index=True)
+    category = Column(String(60), nullable=False, index=True)
+    question = Column(String(300), nullable=False)
+    answer = Column(Text, nullable=False)
+    display_order = Column(Integer, nullable=False, default=0, index=True)
+    is_published = Column(Boolean, nullable=False, default=False, index=True)
+    created_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    updated_by_admin_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False, index=True
+    )

@@ -235,6 +235,7 @@ class Settings:
     vector_store_path: Any = _UNSET
 
     database_path: Any = _UNSET
+    backup_dir: Any = _UNSET
 
     live_signal_poll_seconds: Any = _UNSET
     live_signal_max_pending_per_room: Any = _UNSET
@@ -574,6 +575,7 @@ class Settings:
         self.vector_store_type = str(_resolve(self.vector_store_type, "VECTOR_STORE_TYPE", str, "faiss")).strip().lower() or "faiss"
         self.vector_store_path = _env_path("VECTOR_STORE_PATH", "data/vector_store")
         self.database_path = _env_path("DATABASE_PATH", "data/interview_assistant.db")
+        self.backup_dir = _env_path("BACKUP_DIR", "data/backups")
 
         self.live_signal_poll_seconds = _resolve_number(
             self.live_signal_poll_seconds,

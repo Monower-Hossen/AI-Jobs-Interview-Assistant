@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
@@ -613,13 +614,18 @@ def list_admin_recordings(
             query = query.filter(LiveInterviewRecording.owner_user_id == int(owner_user_id))
         if status:
             query = query.filter(LiveInterviewRecording.recording_status == str(status))
-        if search:
-            term = f"%{str(search).strip()}%"
-            query = query.filter(
-                (User.email.ilike(term))
-                | (User.username.ilike(term))
-                | (JobPost.title.ilike(term))
-            )
+        search_text = str(search).strip() if search else ""
+        if search_text:
+            term = f"%{search_text}%"
+            clauses = [
+                User.email.ilike(term),
+                User.username.ilike(term),
+                JobPost.title.ilike(term),
+                JobPost.company.ilike(term),
+            ]
+            if search_text.isdigit():
+                clauses.append(InterviewSession.id == int(search_text))
+            query = query.filter(or_(*clauses))
         rows = query.order_by(LiveInterviewRecording.created_at.desc()).limit(max(1, int(limit))).all()
         result = []
         for row in rows:
@@ -636,13 +642,19 @@ def list_admin_recordings(
             manifests = [m for m in manifests if m is not None]
             item["capture_manifest"] = manifests[0] if manifests else None
             owner = db.query(User).filter(User.id == row.owner_user_id).first()
+            session = (
+                db.query(InterviewSession)
+                .filter(InterviewSession.id == row.interview_session_id)
+                .first()
+            )
+            job = None
+            if session is not None and session.job_post_id:
+                job = db.query(JobPost).filter(JobPost.id == session.job_post_id).first()
             item["owner_email"] = getattr(owner, "email", "")
             item["owner_username"] = getattr(owner, "username", "")
-            item["interview_status"] = (
-                db.query(InterviewSession.status)
-                .filter(InterviewSession.id == row.interview_session_id)
-                .scalar()
-            )
+            item["job_title"] = getattr(job, "title", None) or getattr(session, "title", None) or "Job interview"
+            item["company"] = getattr(job, "company", "")
+            item["interview_status"] = getattr(session, "status", "")
             result.append(item)
         return result
 

@@ -1013,6 +1013,12 @@ def admin_learning_analytics(actor_admin_id: int | None) -> dict[str, Any]:
             .group_by(LearningResource.category)
             .all()
         )
+        by_difficulty_rows = (
+            db.query(LearningResource.difficulty, func.count(LearningResource.id))
+            .filter(LearningResource.is_active.is_(True))
+            .group_by(LearningResource.difficulty)
+            .all()
+        )
         progress_rows = (
             db.query(LearningResourceProgress.status, func.count(LearningResourceProgress.id))
             .group_by(LearningResourceProgress.status)
@@ -1033,16 +1039,131 @@ def admin_learning_analytics(actor_admin_id: int | None) -> dict[str, Any]:
             .scalar()
             or 0
         )
+        completed_progress = (
+            db.query(func.count(LearningResourceProgress.id))
+            .filter(LearningResourceProgress.status == "completed")
+            .scalar()
+            or 0
+        )
+        total_progress = sum(int(value) for _, value in progress_rows)
+        last_activity = db.query(func.max(LearningActivity.created_at)).scalar()
+        last_notification = db.query(func.max(Notification.created_at)).scalar()
     return {
         "active_resources": int(active_resources),
         "archived_resources": int(archived_resources),
         "resources_by_category": {str(key): int(value) for key, value in by_category_rows},
+        "resources_by_difficulty": {str(key): int(value) for key, value in by_difficulty_rows},
         "progress_by_status": {str(key): int(value) for key, value in progress_rows},
         "active_learners": int(active_learners),
         "achievements": int(achievements),
         "notifications": int(notifications),
         "unread_notifications": int(unread),
+        "progress_records": int(total_progress),
+        "completed_resources": int(completed_progress),
+        "completion_rate": round((int(completed_progress) / int(total_progress)) * 100, 1)
+        if total_progress
+        else 0.0,
+        "last_activity_at": _format_datetime(last_activity),
+        "last_notification_at": _format_datetime(last_notification),
     }
+
+
+def admin_resource_overview(actor_admin_id: int | None) -> list[dict[str, Any]]:
+    with get_readonly_db() as db:
+        _require_admin_actor(db, actor_admin_id)
+        rows = db.query(LearningResource).order_by(LearningResource.title).all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            counts = dict(
+                db.query(LearningResourceProgress.status, func.count(LearningResourceProgress.id))
+                .filter(LearningResourceProgress.resource_id == row.id)
+                .group_by(LearningResourceProgress.status)
+                .all()
+            )
+            last_viewed = (
+                db.query(func.max(LearningResourceProgress.last_viewed_at))
+                .filter(LearningResourceProgress.resource_id == row.id)
+                .scalar()
+            )
+            has_url = bool(row.url)
+            has_content = bool(row.content)
+            resource_type = (
+                "Link + notes" if has_url and has_content else "Link" if has_url else "Notes" if has_content else "Reference"
+            )
+            result.append(
+                {
+                    "id": int(row.id),
+                    "title": str(row.title),
+                    "category": str(row.category),
+                    "difficulty": str(row.difficulty),
+                    "type": resource_type,
+                    "status": "Active" if row.is_active else "Archived",
+                    "estimated_minutes": int(row.estimated_minutes or 0),
+                    "skill_tags": list(row.skill_tags or []),
+                    "not_started": int(counts.get("not_started", 0)),
+                    "in_progress": int(counts.get("in_progress", 0)),
+                    "completed": int(counts.get("completed", 0)),
+                    "last_viewed": last_viewed,
+                    "views": "N/A",
+                    "created_at": row.created_at,
+                }
+            )
+        return result
+
+
+def admin_learning_activity(actor_admin_id: int | None, limit: int = 100) -> list[dict[str, Any]]:
+    with get_readonly_db() as db:
+        _require_admin_actor(db, actor_admin_id)
+        rows = (
+            db.query(LearningActivity, UserSession, User)
+            .join(UserSession, LearningActivity.session_id == UserSession.id)
+            .join(User, UserSession.user_id == User.id)
+            .order_by(LearningActivity.created_at.desc(), LearningActivity.id.desc())
+            .limit(max(1, min(int(limit), 200)))
+            .all()
+        )
+        return [
+            {
+                "Date": _format_datetime(activity.created_at),
+                "Workspace": str(session.label or ""),
+                "User": user.email,
+                "Activity": str(activity.activity_type),
+                "Description": str(activity.description or ""),
+                "Points": int(activity.points or 0),
+            }
+            for activity, session, user in rows
+        ]
+
+
+def admin_learning_progress(actor_admin_id: int | None, limit: int = 100) -> list[dict[str, Any]]:
+    with get_readonly_db() as db:
+        _require_admin_actor(db, actor_admin_id)
+        rows = (
+            db.query(LearningResourceProgress, LearningResource, UserSession, User)
+            .join(LearningResource, LearningResourceProgress.resource_id == LearningResource.id)
+            .join(UserSession, LearningResourceProgress.session_id == UserSession.id)
+            .join(User, UserSession.user_id == User.id)
+            .order_by(LearningResourceProgress.updated_at.desc(), LearningResourceProgress.id.desc())
+            .limit(max(1, min(int(limit), 200)))
+            .all()
+        )
+        return [
+            {
+                "Updated": _format_datetime(progress.updated_at),
+                "User": user.email,
+                "Resource": resource.title,
+                "Category": resource.category,
+                "Status": str(progress.status),
+                "Progress %": int(progress.progress_percent or 0),
+            }
+            for progress, resource, session, user in rows
+        ]
+
+
+def _format_datetime(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return "N/A"
 
 
 def admin_notification_broadcasts(actor_admin_id: int | None) -> list[dict[str, Any]]:

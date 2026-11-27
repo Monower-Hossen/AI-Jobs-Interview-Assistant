@@ -1,9 +1,12 @@
+import importlib
+
 import streamlit as st
 
 from frontend.shared.components import (
     data_table,
     empty_state,
     error_state,
+    kpi_row,
     page_header,
     success_toast,
 )
@@ -16,7 +19,12 @@ def show_admin_learning() -> None:
         st.error("Administrator access required.", icon=":material/error:")
         st.stop()
 
+    from services import learning_service
     from services.auth_service import AuthError, require_admin
+
+    if not hasattr(learning_service, "admin_learning_activity"):
+        importlib.reload(learning_service)
+
     from services.learning_service import (
         ADMIN_NOTIFICATION_TYPES,
         NOTIFICATION_SEVERITIES,
@@ -24,10 +32,13 @@ def show_admin_learning() -> None:
         RESOURCE_DIFFICULTIES,
         admin_broadcast_notification,
         admin_create_resource,
+        admin_learning_activity,
         admin_learning_analytics,
+        admin_learning_progress,
         admin_list_resources,
         admin_notification_broadcasts,
         admin_notification_summary,
+        admin_resource_overview,
         admin_set_resource_active,
         admin_update_resource,
     )
@@ -50,6 +61,7 @@ def show_admin_learning() -> None:
         _render_resources(
             account.id,
             admin_list_resources,
+            admin_resource_overview,
             admin_create_resource,
             admin_update_resource,
             admin_set_resource_active,
@@ -58,7 +70,14 @@ def show_admin_learning() -> None:
             AuthError,
         )
     with analytics_tab:
-        _render_analytics(account.id, admin_learning_analytics, AuthError)
+        _render_analytics(
+            account.id,
+            admin_learning_analytics,
+            admin_resource_overview,
+            admin_learning_progress,
+            admin_learning_activity,
+            AuthError,
+        )
     with notifications_tab:
         _render_notifications(
             account.id,
@@ -72,9 +91,17 @@ def show_admin_learning() -> None:
         )
 
 
+def _option_index(options, value) -> int:
+    try:
+        return list(options).index(value)
+    except (ValueError, TypeError):
+        return 0
+
+
 def _render_resources(
     admin_id,
     list_resources,
+    resource_overview,
     create_resource,
     update_resource,
     set_resource_active,
@@ -82,6 +109,59 @@ def _render_resources(
     difficulties,
     auth_error,
 ) -> None:
+    st.subheader("Resource library", divider=True)
+    try:
+        overview = resource_overview(admin_id)
+        resources = list_resources(admin_id, include_inactive=True)
+    except (ValueError, auth_error) as exc:
+        error_state("Learning resources could not be loaded.", str(exc))
+        overview = []
+        resources = []
+    if not overview and resources:
+        overview = [
+            {
+                "Title": row.get("title", ""),
+                "Category": row.get("category", ""),
+                "Difficulty": row.get("difficulty", ""),
+                "Status": "Active" if row.get("is_active") else "Archived",
+                "Views": "N/A",
+            }
+            for row in resources
+        ]
+    search = st.text_input("Search resources", key="_admin_learning_resource_search")
+    category_filter = st.selectbox(
+        "Category", ["all", *categories], key="_admin_learning_resource_category_filter"
+    )
+    status_filter = st.selectbox(
+        "Status", ["all", "Active", "Archived"], key="_admin_learning_resource_status_filter"
+    )
+    filtered = [
+        row
+        for row in overview
+        if (not search or search.lower() in str(row.get("title", "")).lower())
+        and (category_filter == "all" or row.get("category") == category_filter)
+        and (status_filter == "all" or row.get("status") == status_filter)
+    ]
+    data_table(
+        [
+            {
+                "Title": row.get("title", ""),
+                "Category": row.get("category", ""),
+                "Difficulty": row.get("difficulty", ""),
+                "Type": row.get("type", "N/A"),
+                "Status": row.get("status", "N/A"),
+                "Minutes": row.get("estimated_minutes", "N/A"),
+                "Started": row.get("not_started", "N/A"),
+                "In progress": row.get("in_progress", "N/A"),
+                "Completed": row.get("completed", "N/A"),
+                "Views": row.get("views", "N/A"),
+                "Last viewed": row.get("last_viewed", "N/A"),
+            }
+            for row in filtered
+        ],
+        "No learning resources match the current filters.",
+    )
+
     st.subheader("Create resource", divider=True)
     with st.form("admin_learning_create_resource", border=True):
         title = st.text_input("Title", key="admin_learning_new_title")
@@ -116,8 +196,6 @@ def _render_resources(
             success_toast("Learning resource created and announced.")
             st.rerun()
 
-    resources = list_resources(admin_id, include_inactive=True)
-    st.subheader("Existing resources", divider=True)
     if not resources:
         empty_state("No learning resources yet.", "Create the first curated resource above.")
         return
@@ -132,13 +210,17 @@ def _render_resources(
             height=80,
             key="admin_learning_edit_description",
         )
-        category_index = categories.index(selected["category"])
         category = st.selectbox(
-            "Category", categories, index=category_index, key="admin_learning_edit_category"
+            "Category",
+            categories,
+            index=_option_index(categories, selected["category"]),
+            key="admin_learning_edit_category",
         )
-        difficulty_index = difficulties.index(selected["difficulty"])
         difficulty = st.selectbox(
-            "Difficulty", difficulties, index=difficulty_index, key="admin_learning_edit_difficulty"
+            "Difficulty",
+            difficulties,
+            index=_option_index(difficulties, selected["difficulty"]),
+            key="admin_learning_edit_difficulty",
         )
         minutes = st.number_input(
             "Estimated minutes",
@@ -202,31 +284,83 @@ def _render_resources(
             st.rerun()
 
 
-def _render_analytics(admin_id, analytics_fn, auth_error) -> None:
+def _render_analytics(
+    admin_id,
+    analytics_fn,
+    resource_overview,
+    progress_fn,
+    activity_fn,
+    auth_error,
+) -> None:
     try:
         snapshot = analytics_fn(admin_id)
-    except auth_error as exc:
+        overview = resource_overview(admin_id)
+        progress_rows = progress_fn(admin_id)
+        activity_rows = activity_fn(admin_id)
+    except (ValueError, auth_error) as exc:
         error_state("Learning analytics could not be loaded.", str(exc))
         return
-    st.metric("Active resources", snapshot["active_resources"])
-    st.metric("Archived resources", snapshot["archived_resources"])
-    st.metric("Active learners", snapshot["active_learners"])
-    st.metric("Achievements earned", snapshot["achievements"])
-    st.metric("Notifications", snapshot["notifications"])
-    data_table(
+    kpi_row(
         [
-            {"Category": key, "Resources": value}
-            for key, value in sorted(snapshot["resources_by_category"].items())
-        ],
-        "No active resource categories yet.",
+            ("Active resources", snapshot["active_resources"], None, ":material/menu_book:"),
+            ("Archived resources", snapshot["archived_resources"], None, ":material/archive:"),
+            ("Active learners", snapshot["active_learners"], None, ":material/groups:"),
+            ("Progress records", snapshot["progress_records"], None, ":material/trending_up:"),
+            ("Completion rate", f"{snapshot['completion_rate']}%", None, ":material/check_circle:"),
+            ("Achievements earned", snapshot["achievements"], None, ":material/emoji_events:"),
+            ("Unread notices", snapshot["unread_notifications"], None, ":material/notifications:"),
+        ]
     )
+    st.caption(
+        f"Last learning activity: {snapshot['last_activity_at']} • "
+        f"Last notification: {snapshot['last_notification_at']}"
+    )
+    st.subheader("Category and difficulty mix", divider=True)
+    mix_columns = st.columns(2)
+    with mix_columns[0]:
+        data_table(
+            [
+                {"Category": key, "Active resources": value}
+                for key, value in sorted(snapshot["resources_by_category"].items())
+            ],
+            "No active resource categories yet.",
+        )
+    with mix_columns[1]:
+        data_table(
+            [
+                {"Difficulty": key, "Active resources": value}
+                for key, value in sorted(snapshot["resources_by_difficulty"].items())
+            ],
+            "No active resource difficulties yet.",
+        )
+    st.subheader("Resource performance", divider=True)
     data_table(
         [
-            {"Status": key, "Resources": value}
+            {
+                "Resource": row.get("title", ""),
+                "Category": row.get("category", ""),
+                "Status": row.get("status", ""),
+                "Started": row.get("not_started", 0),
+                "In progress": row.get("in_progress", 0),
+                "Completed": row.get("completed", 0),
+                "Views": row.get("views", "N/A"),
+            }
+            for row in overview
+        ],
+        "No learning resources yet.",
+    )
+    st.subheader("Progress by status", divider=True)
+    data_table(
+        [
+            {"Status": key, "Records": value}
             for key, value in sorted(snapshot["progress_by_status"].items())
         ],
         "No resource progress recorded yet.",
     )
+    st.subheader("Recent resource progress", divider=True)
+    data_table(progress_rows, "No resource progress recorded yet.")
+    st.subheader("Recent learning activity", divider=True)
+    data_table(activity_rows, "No learning activity recorded yet.")
 
 
 def _render_notifications(
@@ -245,7 +379,9 @@ def _render_notifications(
         message = st.text_area("Message", height=120, key="admin_learning_broadcast_message")
         notice_type = st.selectbox("Type", notification_types, key="admin_learning_broadcast_type")
         severity = st.selectbox("Severity", severities, key="admin_learning_broadcast_severity")
-        target_page = st.selectbox("Open page", target_pages, index=target_pages.index("learning_center"))
+        target_page = st.selectbox(
+            "Open page", target_pages, index=_option_index(target_pages, "learning_center")
+        )
         submitted = st.form_submit_button(
             "Send to active users", type="primary", icon=":material/campaign:", width="stretch"
         )
@@ -267,10 +403,21 @@ def _render_notifications(
     try:
         summary = summary_fn(admin_id)
         campaigns = broadcasts_fn(admin_id)
-    except auth_error as exc:
+    except (ValueError, auth_error) as exc:
         error_state("Notification records could not be loaded.", str(exc))
         return
-    st.metric("Total notifications", summary["total"])
+    kpi_row(
+        [
+            ("Total notifications", summary["total"], None, ":material/notifications:"),
+            (
+                "Unread notifications",
+                summary.get("by_type", {}).get("admin_announcement", 0),
+                None,
+                ":material/mark_email_unread:",
+            ),
+            ("Broadcast campaigns", len(campaigns), None, ":material/campaign:"),
+        ]
+    )
     data_table(
         [{"Type": key, "Count": value} for key, value in sorted(summary["by_type"].items())],
         "No notifications recorded yet.",
@@ -282,7 +429,7 @@ def _render_notifications(
                 "Title": row["title"],
                 "Type": row["type"],
                 "Recipients": row["recipients"],
-                "Created": str(row["created_at"]),
+                "Created": row["created_at"],
             }
             for row in campaigns
         ],

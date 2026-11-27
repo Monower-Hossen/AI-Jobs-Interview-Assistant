@@ -213,7 +213,21 @@ def _admin_pages() -> dict:
                 url_path="admin-reports",
             ),
         ],
-        "System": [
+        "Support & Communication Management": [
+            st.Page(
+                "frontend/admin/support_management.py",
+                title="Support Management",
+                icon=":material/support_agent:",
+                url_path="admin-support-management",
+            ),
+        ],
+        "System Management": [
+            st.Page(
+                "frontend/admin/data_management.py",
+                title="Backup and data management",
+                icon=":material/database:",
+                url_path="admin-data-management",
+            ),
             st.Page(
                 "frontend/user/settings.py",
                 title="System Settings",
@@ -313,6 +327,14 @@ def _user_pages(account) -> dict:
                 title="Notifications",
                 icon=":material/notifications:",
                 url_path="notifications",
+            ),
+        ],
+        "Support & Communication": [
+            st.Page(
+                "frontend/user/support_center.py",
+                title="Support Center",
+                icon=":material/support_agent:",
+                url_path="support-center",
             ),
         ],
         "My Account": [

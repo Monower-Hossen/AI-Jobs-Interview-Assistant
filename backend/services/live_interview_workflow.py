@@ -6,6 +6,7 @@ from services.live_interview_media_service import LiveMediaError
 from services.live_interview_media_service import (
     cleanup_temporary_media as _cleanup_temporary_media,
 )
+from services.live_interview_media_service import delete_live_media as _delete_live_media
 from services.live_interview_media_service import delete_live_recording as _delete_live_recording
 from services.live_interview_media_service import list_admin_recordings as _list_admin_recordings
 from services.live_interview_media_service import list_user_recordings as _list_user_recordings
@@ -60,6 +61,26 @@ def delete_live_recording(
         raise LiveInterviewError(str(exc)) from exc
     except Exception as exc:
         raise LiveInterviewError("Could not delete the recording.") from exc
+
+
+def delete_live_media(
+    media_id: int,
+    *,
+    user_id: int | None = None,
+    session_token: str | None = None,
+    admin_id: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return _delete_live_media(
+            int(media_id),
+            actor_user_id=user_id,
+            session_token=session_token,
+            actor_admin_id=admin_id,
+        )
+    except LiveMediaError as exc:
+        raise LiveInterviewError(str(exc)) from exc
+    except Exception as exc:
+        raise LiveInterviewError("Could not delete the recording file.") from exc
 
 
 def list_live_recordings(*, user_id: int, session_token: str) -> list[dict[str, Any]]:

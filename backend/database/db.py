@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,6 +14,47 @@ engine = None
 SessionLocal: sessionmaker | None = None
 _MAX_DETACH_REFRESH = 50
 _COMMIT_SUCCEEDED_KEY = "phase32_commit_succeeded"
+_db_operation_gate = threading.RLock()
+_gate_condition = threading.Condition(_db_operation_gate)
+_gate_local = threading.local()
+_gate_depth = 0
+_active_sessions = 0
+
+
+@contextmanager
+def database_operation_gate() -> Generator[None, None, None]:
+    global _gate_depth
+    thread_depth = int(getattr(_gate_local, "depth", 0))
+    with _db_operation_gate:
+        _gate_depth += 1
+        _gate_local.depth = thread_depth + 1
+        _gate_condition.notify_all()
+        try:
+            while _active_sessions > 0:
+                if int(getattr(_gate_local, "depth", 0)) <= 1:
+                    _gate_condition.wait()
+                else:
+                    break
+            yield
+        finally:
+            _gate_depth -= 1
+            _gate_local.depth = thread_depth
+            _gate_condition.notify_all()
+
+
+@contextmanager
+def _session_gate() -> Generator[None, None, None]:
+    global _active_sessions
+    with _db_operation_gate:
+        while _gate_depth > 0 and not getattr(_gate_local, "depth", 0):
+            _gate_condition.wait()
+        _active_sessions += 1
+    try:
+        yield
+    finally:
+        with _db_operation_gate:
+            _active_sessions -= 1
+            _gate_condition.notify_all()
 
 
 def _detach_all(db: Session) -> None:
@@ -259,50 +301,52 @@ def get_db_context() -> Generator[Session, None, None]:
     ORM objects are detached on close instead of expired, so UI code can keep
     rendering rows fetched inside the ``with`` block.
     """
-    if SessionLocal is None:
-        init_database()
+    with _session_gate():
+        if SessionLocal is None:
+            init_database()
 
-    assert SessionLocal is not None
-    db = SessionLocal()
-    db.info[_COMMIT_SUCCEEDED_KEY] = False
-    try:
-        yield db
-        db.commit()
-        db.info[_COMMIT_SUCCEEDED_KEY] = True
-    except Exception:
+        assert SessionLocal is not None
+        db = SessionLocal()
+        db.info[_COMMIT_SUCCEEDED_KEY] = False
         try:
-            db.rollback()
+            yield db
+            db.commit()
+            db.info[_COMMIT_SUCCEEDED_KEY] = True
         except Exception:
-            pass
-        raise
-    finally:
-        try:
-            _detach_all(db)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
         finally:
-            db.close()
+            try:
+                _detach_all(db)
+            finally:
+                db.close()
 
 
 @contextmanager
 def get_readonly_db() -> Generator[Session, None, None]:
     """Read-only session context: no commit, rollback on error, safe for reporting."""
-    if SessionLocal is None:
-        init_database()
+    with _session_gate():
+        if SessionLocal is None:
+            init_database()
 
-    assert SessionLocal is not None
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception:
+        assert SessionLocal is not None
+        db = SessionLocal()
         try:
-            db.rollback()
+            yield db
         except Exception:
-            pass
-        raise
-    finally:
-        try:
-            _detach_all(db)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
         finally:
-            db.close()
+            try:
+                _detach_all(db)
+            finally:
+                db.close()
 
 
 def create_session() -> Session:
